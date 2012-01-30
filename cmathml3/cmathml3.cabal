@@ -19,6 +19,7 @@ Test-Suite mathtest
 
 Library
     Exposed-Modules: Data.ContentMathML3,
-                     Data.ContentMathML3.Structure
+                     Data.ContentMathML3.Structure,
+                     Data.ContentMathML3.Parser
     Build-Depends: hxt >= 9 && <10,
                    base >= 3
