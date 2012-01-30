@@ -1,6 +1,6 @@
 Name: arrowapply-utils
 Version: 0.1
-Cabal-Version: >= 1.2
+Cabal-Version: >= 1.6
 Build-Type: Simple
 License: BSD3
 License-File: LICENSE
@@ -16,5 +16,4 @@ Source-Repository head
     Location: https://github.com/A1kmm/cellml-testbed/
 Library
     Exposed-Modules: Control.Arrow.ApplyUtils
-    Build-Depends: hxt >= 9 && <10,
-                   base >= 3
+    Build-Depends: base >= 3 && <= 5
