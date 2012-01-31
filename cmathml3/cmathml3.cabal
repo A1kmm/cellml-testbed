@@ -22,4 +22,7 @@ Library
                      Data.ContentMathML3.Structure,
                      Data.ContentMathML3.Parser
     Build-Depends: hxt >= 9 && <10,
-                   base >= 3
+                   base >= 3,
+                   arrowapply-utils < 1,
+                   monads-tf,
+                   transformers

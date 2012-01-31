@@ -2,6 +2,9 @@
 module Control.Arrow.ApplyUtils
 where
 import Control.Arrow
+import Control.Monad
+
+newtype ArrowAsMonad a c = ArrowAsMonad { unApplyAsMonad :: a () c }
 
 -- | An instance that lets you work with Arrows that support ArrowApply as monads.
 -- | Example:
@@ -10,21 +13,22 @@ import Control.Arrow
 -- |               let vp1 = v + 1
 -- |               v' <- unmonadicA anotherIntToIntArrow vp1
 -- |               return (v' * 10)
-instance ArrowApply a => Monad (a ())
+instance (Arrow a, ArrowApply a) => Monad (ArrowAsMonad a)
   where
-    x >>= y = (x >>^ (\v -> (y v, ()))) >>> app
-    return = arr . const
+    (ArrowAsMonad x) >>= y =
+      ArrowAsMonad $ (x >>^ (\v -> (unApplyAsMonad (y v), ()))) >>> app
+    return = ArrowAsMonad . arr . const
 
 -- | Embed a block of monadic code in an arrow.
-monadicA :: ArrowApply a => (b -> a () c) -> a b c
-monadicA f = arr (\v -> (f v, ())) >>> app
+monadicA :: ArrowApply a => (b -> ArrowAsMonad a c) -> a b c
+monadicA f = arr (\v -> (unApplyAsMonad $ f v, ())) >>> app
 
 -- | Embed an arrow in a block of monadic code.
-unmonadicA :: ArrowApply a => a b c -> b -> a () c
-unmonadicA a b = arr (const b) >>> a
+unmonadicA :: ArrowApply a => a b c -> b -> ArrowAsMonad a c
+unmonadicA a b = ArrowAsMonad $ arr (const b) >>> a
 
 -- | Lift an Arrow operation.
-liftA :: ArrowApply a => (c -> d) -> a b c -> a b d
+liftA :: Arrow a => (c -> d) -> a b c -> a b d
 liftA = flip (>>^)
 
 -- | Lift an Arrow operation with two parameters
@@ -110,3 +114,21 @@ liftA9 f a1 a2 a3 a4 a5 a6 a7 a8 a9 = monadicA $ \v -> do
   p8 <- unmonadicA a8 v
   p9 <- unmonadicA a9 v
   return (f p1 p2 p3 p4 p5 p6 p7 p8 p9)
+
+liftAM :: (ArrowApply a, Monad m) => (p1 -> c) -> a b (m p1) -> a b (m c)
+liftAM f = liftA (liftM f)
+liftAM2 :: (ArrowApply a, Monad m) =>
+           (p1 -> p2 -> c) -> a b (m p1) -> a b (m p2) -> a b (m c)
+liftAM2 f = liftA2 (liftM2 f)
+liftAM3 :: (ArrowApply a, Monad m) =>
+           (p1 -> p2 -> p3 -> c) -> a b (m p1) -> a b (m p2) -> a b (m p3) ->
+           a b (m c)
+liftAM3 f = liftA3 (liftM3 f)
+liftAM4 :: (ArrowApply a, Monad m) =>
+           (p1 -> p2 -> p3 -> p4 -> c) -> a b (m p1) -> a b (m p2) -> a b (m p3) ->
+           a b (m p4) -> a b (m c)
+liftAM4 f = liftA4 (liftM4 f)
+liftAM5 :: (ArrowApply a, Monad m) =>
+           (p1 -> p2 -> p3 -> p4 -> p5 -> c) -> a b (m p1) -> a b (m p2) ->
+           a b (m p3) -> a b (m p4) -> a b (m p5) -> a b (m c)
+liftAM5 f = liftA5 (liftM5 f)

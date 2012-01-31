@@ -42,10 +42,17 @@ data VariableType = CiInteger           -- ^ An integer-valued variable.
                   deriving (Eq, Ord, Typeable, Data)
 
 data WithCommon a = WithCommon Common a deriving (Eq, Ord, Typeable, Data)
-data MaybeSemantics a = Semantics a XNode | NoSemantics a deriving (Eq, Ord, Typeable, Data)
+data MaybeSemantics a = Semantics {
+  semanticsCommon :: Common,
+  semanticsCD :: Maybe String,
+  semanticsName :: Maybe String,
+  unSemantics :: a, 
+  semanticsAnnotationXml :: [XmlTree],
+  semanticsAnnotation :: [XmlTree]
+  } | NoSemantics a deriving (Eq, Ord, Typeable, Data)
 
 -- | Strict MathML 3 Abstract Syntax Tree
-type ASTC = WithCommon (MaybeSemantics AST)
+type ASTC = MaybeSemantics (WithCommon AST)
 
 data Ci = Ci VariableType String deriving (Eq, Ord, Typeable, Data)
 type CCi = WithCommon Ci
@@ -82,7 +89,7 @@ nsCommonDefault = NSCommon commonDefault Nothing Nothing
 data WithNSCommon a = WithNSCommon NSCommon a deriving (Eq, Ord, Typeable, Data)
 
 -- | Non-strict MathML 3 Abstract Syntax Tree
-type NSASTC = WithNSCommon (MaybeSemantics NSAST)
+type NSASTC = MaybeSemantics (WithNSCommon NSAST)
 
 -- | A non-strict constant (cn) value representation.
 data NSConstantPart = NSCnInteger Int                    -- ^ An integer constant
@@ -106,13 +113,13 @@ data NSVariableType = NSStrictVariableType VariableType -- ^ A strict variable t
 
 -- | The content of a non-strict ci or csymbol element.
 data NSSymbolContent = NSCiText String                  -- ^ A named element
-                     | NSCiMGlyph XNode                 -- ^ An mglyph node
-                     | NSCiPresentationExpression XNode -- ^ Presentation MathML
+                     | NSCiMGlyph XmlTree                 -- ^ An mglyph node
+                     | NSCiPresentationExpression XmlTree -- ^ Presentation MathML
                      deriving (Eq, Ord, Typeable, Data)
 
 -- | A non-strict ci
 data NSCi = NSCi NSVariableType NSSymbolContent deriving (Eq, Ord, Typeable, Data)
-type NSCCi = WithNSCommon Ci
+type NSCCi = WithNSCommon NSCi
 
 -- | A bound variable
 data NSBvar = NSBvar { bvarCi :: MaybeSemantics NSCi, -- ^ The inner ci
