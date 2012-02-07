@@ -25,4 +25,6 @@ Library
                    base >= 3,
                    arrowapply-utils < 1,
                    monads-tf,
-                   transformers
+                   transformers,
+                   parsec,
+                   containers

@@ -54,7 +54,7 @@ data MaybeSemantics a = Semantics {
 -- | Strict MathML 3 Abstract Syntax Tree
 type ASTC = MaybeSemantics (WithCommon AST)
 
-data Ci = Ci VariableType String deriving (Eq, Ord, Typeable, Data)
+data Ci = Ci (Maybe VariableType) String deriving (Eq, Ord, Typeable, Data)
 type CCi = WithCommon Ci
 
 -- | Strict Abstract Syntax Tree, without common information on tree root
@@ -102,13 +102,13 @@ data NSConstantPart = NSCnInteger Int                    -- ^ An integer constan
                     | NSCnComplexCartesian Double Double
                        -- | A complex polar constant
                     | NSCnComplexPolar Double Double
-                    | NSCnConstant Double                -- ^ A predefined constant
-                    | NSCnText String                    -- ^ A string constant
+                    | NSCnConstant String                -- ^ A predefined constant
+                    | NSCnOther String String            -- ^ Another type of constant
                     deriving (Eq, Ord, Typeable, Data)
 
 -- | The type of a variable
 data NSVariableType = NSStrictVariableType VariableType -- ^ A strict variable type
-                    | CiString                          -- ^ A string-valeud variable
+                    | NSCiOther String                    -- ^ A user-defined type
                     deriving (Eq, Ord, Typeable, Data)
 
 -- | The content of a non-strict ci or csymbol element.
@@ -118,8 +118,7 @@ data NSSymbolContent = NSCiText String                  -- ^ A named element
                      deriving (Eq, Ord, Typeable, Data)
 
 -- | A non-strict ci
-data NSCi = NSCi NSVariableType NSSymbolContent deriving (Eq, Ord, Typeable, Data)
-type NSCCi = WithNSCommon NSCi
+data NSCi = NSCi (Maybe NSVariableType) NSSymbolContent deriving (Eq, Ord, Typeable, Data)
 
 -- | A bound variable
 data NSBvar = NSBvar { bvarCi :: MaybeSemantics NSCi, -- ^ The inner ci
@@ -130,10 +129,9 @@ data NSBvar = NSBvar { bvarCi :: MaybeSemantics NSCi, -- ^ The inner ci
 data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent it
                     nsCnData :: NSConstantPart -- ^ The constant data itself
                   }
-             | NSASTCi NSCCi -- ^ A ci element
+             | NSASTCi NSCi -- ^ A ci element
                -- | A csymbol element
              | NSCsymbol { nsCsymbolContentDictionary :: Maybe String,
-                           nsCsymbolSymbolName :: String, 
                            nsCsymbolSymbolType :: String, 
                            nsCsymbolContent :: NSSymbolContent }
              | NSCs String -- ^ A string constant (cs)
@@ -145,8 +143,8 @@ data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent i
                         nsApplyBvar :: [NSBvar],
                         nsApplyQualifiers :: Maybe NSQualifier,
                         nsApplyOperands :: [NSASTC] }    -- ^ Function binding
-             | NSError { nsErrorType :: ASTC,
-                         nsErrorArgs :: [ASTC] }         -- ^ Error
+             | NSError { nsErrorType :: NSASTC,
+                         nsErrorArgs :: [NSASTC] }       -- ^ Error
              | NSCBytes String                           -- ^ A string of bytes.
                -- | The domain of application               
              | NSDomainOfApplication ASTC
