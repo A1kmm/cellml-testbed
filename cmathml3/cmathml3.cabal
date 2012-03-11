@@ -21,6 +21,7 @@ Library
     Exposed-Modules: Data.ContentMathML3,
                      Data.ContentMathML3.Structure,
                      Data.ContentMathML3.Parser
+    Other-Modules: Data.ContentMathML3.XNodeOrd
     Build-Depends: hxt >= 9 && <10,
                    base >= 3,
                    arrowapply-utils < 1,

@@ -121,8 +121,8 @@ data NSSymbolContent = NSCiText String                  -- ^ A named element
 data NSCi = NSCi (Maybe NSVariableType) NSSymbolContent deriving (Eq, Ord, Typeable, Data)
 
 -- | A bound variable
-data NSBvar = NSBvar { bvarCi :: MaybeSemantics NSCi, -- ^ The inner ci
-                       bvarDegree :: NSASTC           -- ^ The degree (e.g. for diff)
+data NSBvar = NSBvar { bvarCi :: MaybeSemantics (WithNSCommon NSCi), -- ^ The inner ci
+                       bvarDegree :: Maybe NSASTC           -- ^ The degree (e.g. for diff)
                      } deriving (Eq, Ord, Typeable, Data)
 
 -- | Non-strict MathML AST, without common information on tree root.
@@ -137,17 +137,15 @@ data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent i
              | NSCs String -- ^ A string constant (cs)
              | NSApply { nsApplyOperator :: NSASTC,
                          nsApplyBvar :: [NSBvar],
-                         nsApplyQualifier :: Maybe NSQualifier,
+                         nsApplyQualifier :: [NSQualifier],
                          nsApplyOperands :: [NSASTC] }   -- ^ Function application
              | NSBind { nsApplyOperator :: NSASTC,
                         nsApplyBvar :: [NSBvar],
-                        nsApplyQualifiers :: Maybe NSQualifier,
+                        nsApplyQualifiers :: [NSQualifier],
                         nsApplyOperands :: [NSASTC] }    -- ^ Function binding
              | NSError { nsErrorType :: NSASTC,
                          nsErrorArgs :: [NSASTC] }       -- ^ Error
              | NSCBytes String                           -- ^ A string of bytes.
-               -- | The domain of application               
-             | NSDomainOfApplication ASTC
                -- | A piecewise expression
              | NSPiecewise ([WithNSCommon (NSASTC, NSASTC)], Maybe (WithNSCommon NSASTC))
                -- | A (deprecated) relation
@@ -160,7 +158,6 @@ data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent i
                            nsNArgs :: Maybe Int,
                            nsOccurrence :: Maybe NSDeclareOccurrence, 
                            nsDeclareExprs :: [NSASTC] }
-             | NSASTInterval (WithNSCommon NSInterval) -- ^ An interval
              | NSInverse                               -- ^ Inverse
              | NSIdent                                 -- ^ Identify function
              | NSDomain                                -- ^ Domain
@@ -210,7 +207,7 @@ data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent i
              | NSNeq                                   -- ^ Not Equal
              | NSApprox                                -- ^ Approximately Equal
              | NSFactorof                              -- ^ Factor of
-             | NSTendsto String                        -- ^ Tends to
+             | NSTendsto (Maybe String)                -- ^ Tends to
              | NSInt                                   -- ^ Integral
              | NSDiff                                  -- ^ Differential
              | NSPartialdiff                           -- ^ Partial Differential
@@ -304,12 +301,13 @@ data NSInterval = NSInterval { nsIntervalClosure :: Maybe String,
                                nsIntervalLow :: NSASTC, 
                                nsIntervalHigh :: NSASTC }
                     deriving (Eq, Ord, Typeable, Data)
-data NSDomainQualifier = NSDQDomainOfApplication NSASTC | NSDQCondition NSASTC |
-                         NSDQInterval (WithNSCommon NSInterval) |
-                         NSDQLimits (NSASTC, Maybe NSASTC)
-                       deriving (Eq, Ord, Typeable, Data)
-data NSQualifier = NSDomainQualifiers [NSDomainQualifier] | 
+
+data NSDomainQualifier = NSDomainOfApplication NSASTC | NSCondition NSASTC |
+                         NSQInterval (WithNSCommon NSInterval) |
+                         NSLowlimit NSASTC | 
+                         NSUplimit NSASTC deriving (Eq, Ord, Typeable, Data)
+data NSQualifier = NSQualDomain NSDomainQualifier |
                    NSQualDegree NSASTC |
                    NSQualMomentabout NSASTC |
                    NSQualLogbase NSASTC
-                 deriving (Eq, Ord, Typeable, Data)
+                     deriving (Eq, Ord, Typeable, Data)
