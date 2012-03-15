@@ -1,0 +1,15 @@
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+  <apply><eq/>
+    <ci>x</ci>
+    <apply><times/>
+      <ci>y</ci>
+      <apply><pow/>
+        <apply><diff/>
+          <bvar><ci>t</ci></bvar>
+          <ci>z</ci>
+        </apply>
+        <cn>2</cn>
+      </apply>
+    </apply>
+  </apply>
+</math>

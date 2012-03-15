@@ -14,7 +14,7 @@ data Common = Common {
   commonClass :: Maybe String, -- ^ The identifier of the class used in styling.
   commonStyle :: Maybe String, -- ^ The style to be applied.
   commonHref  :: Maybe String  -- ^ The URI to link the element to.
-  } deriving (Eq, Ord, Typeable, Data)
+  } deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | A starting point for building a Common
 commonDefault = Common Nothing Nothing Nothing Nothing Nothing
@@ -24,7 +24,7 @@ data ConstantPart = CnInteger Int      -- ^ An integer
                   | CnReal Double      -- ^ A real number
                   | CnDouble Double    -- ^ A double precision real number
                   | CnHexDouble Double -- ^ A double precision real number, in hex
-                  deriving (Eq, Ord, Typeable, Data)
+                  deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | A variable (ci) type
 data VariableType = CiInteger           -- ^ An integer-valued variable.
@@ -39,9 +39,9 @@ data VariableType = CiInteger           -- ^ An integer-valued variable.
                   | CiSet               -- ^ A set-valued variable.
                   | CiList              -- ^ A list-valued variable.
                   | CiMatrix            -- ^ A matrix-valued variable.
-                  deriving (Eq, Ord, Typeable, Data)
+                  deriving (Eq, Ord, Typeable, Data, Show)
 
-data WithCommon a = WithCommon Common a deriving (Eq, Ord, Typeable, Data)
+data WithCommon a = WithCommon Common a deriving (Eq, Ord, Typeable, Data, Show)
 data MaybeSemantics a = Semantics {
   semanticsCommon :: Common,
   semanticsCD :: Maybe String,
@@ -49,12 +49,12 @@ data MaybeSemantics a = Semantics {
   unSemantics :: a, 
   semanticsAnnotationXml :: [XmlTree],
   semanticsAnnotation :: [XmlTree]
-  } | NoSemantics a deriving (Eq, Ord, Typeable, Data)
+  } | NoSemantics a deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | Strict MathML 3 Abstract Syntax Tree
 type ASTC = MaybeSemantics (WithCommon AST)
 
-data Ci = Ci (Maybe VariableType) String deriving (Eq, Ord, Typeable, Data)
+data Ci = Ci (Maybe VariableType) String deriving (Eq, Ord, Typeable, Data, Show)
 type CCi = WithCommon Ci
 
 -- | Strict Abstract Syntax Tree, without common information on tree root
@@ -73,20 +73,20 @@ data AST = Cn ConstantPart                                  -- ^ Constant
                 }                                           -- ^ Binding
          | Error { errorType :: ASTC, errorArgs :: [ASTC] } -- ^ A math error
          | CBytes String                                    -- ^ A string of bytes
-           deriving (Eq, Ord, Data, Typeable)
+           deriving (Eq, Ord, Data, Typeable, Show)
 
 -- | Represents the attributes common to all non-strict MathML elements.
 data NSCommon = NSCommon {
   nsCommon :: Common,                    -- ^ Strict common attributes
   nsCommonDefinitionURL :: Maybe String, -- ^ The definition URL for the element.
   nsCommonEncoding :: Maybe String       -- ^ The encoding of the defintion.
-  } deriving (Eq, Ord, Typeable, Data)
+  } deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | Default values for non-strict common attributes (all absent)
 nsCommonDefault = NSCommon commonDefault Nothing Nothing
 
 -- | Represents some data structure alongside the non-strict common data.
-data WithNSCommon a = WithNSCommon NSCommon a deriving (Eq, Ord, Typeable, Data)
+data WithNSCommon a = WithNSCommon NSCommon a deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | Non-strict MathML 3 Abstract Syntax Tree
 type NSASTC = MaybeSemantics (WithNSCommon NSAST)
@@ -104,26 +104,26 @@ data NSConstantPart = NSCnInteger Int                    -- ^ An integer constan
                     | NSCnComplexPolar Double Double
                     | NSCnConstant String                -- ^ A predefined constant
                     | NSCnOther String String            -- ^ Another type of constant
-                    deriving (Eq, Ord, Typeable, Data)
+                    deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | The type of a variable
 data NSVariableType = NSStrictVariableType VariableType -- ^ A strict variable type
                     | NSCiOther String                    -- ^ A user-defined type
-                    deriving (Eq, Ord, Typeable, Data)
+                    deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | The content of a non-strict ci or csymbol element.
 data NSSymbolContent = NSCiText String                  -- ^ A named element
                      | NSCiMGlyph XmlTree                 -- ^ An mglyph node
                      | NSCiPresentationExpression XmlTree -- ^ Presentation MathML
-                     deriving (Eq, Ord, Typeable, Data)
+                     deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | A non-strict ci
-data NSCi = NSCi (Maybe NSVariableType) NSSymbolContent deriving (Eq, Ord, Typeable, Data)
+data NSCi = NSCi (Maybe NSVariableType) NSSymbolContent deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | A bound variable
 data NSBvar = NSBvar { bvarCi :: MaybeSemantics (WithNSCommon NSCi), -- ^ The inner ci
                        bvarDegree :: Maybe NSASTC           -- ^ The degree (e.g. for diff)
-                     } deriving (Eq, Ord, Typeable, Data)
+                     } deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | Non-strict MathML AST, without common information on tree root.
 data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent it
@@ -287,27 +287,27 @@ data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent i
              | NSPi                                    -- ^ pi
              | NSEulergamma                            -- ^ Euler gamma
              | NSInfinity                              -- ^ +Infinity
-             deriving (Eq, Ord, Typeable, Data)
+             deriving (Eq, Ord, Typeable, Data, Show)
 
 data NSMatrixRow = NSMatrixRow { nsMatrixRowBvar :: [NSBvar],
                                  nsMatrixRowDomain :: [NSDomainQualifier],
                                  msMatrixRowExpressions :: [NSASTC] }
-                     deriving (Eq, Ord, Typeable, Data)
+                     deriving (Eq, Ord, Typeable, Data, Show)
 
 data NSDeclareOccurrence = NSDeclarePrefix | NSDeclareInfix | NSDeclareFunctionModel
-                            deriving (Eq, Ord, Typeable, Data)
+                            deriving (Eq, Ord, Typeable, Data, Show)
 
 data NSInterval = NSInterval { nsIntervalClosure :: Maybe String,
                                nsIntervalLow :: NSASTC, 
                                nsIntervalHigh :: NSASTC }
-                    deriving (Eq, Ord, Typeable, Data)
+                    deriving (Eq, Ord, Typeable, Data, Show)
 
 data NSDomainQualifier = NSDomainOfApplication NSASTC | NSCondition NSASTC |
                          NSQInterval (WithNSCommon NSInterval) |
                          NSLowlimit NSASTC | 
-                         NSUplimit NSASTC deriving (Eq, Ord, Typeable, Data)
+                         NSUplimit NSASTC deriving (Eq, Ord, Typeable, Data, Show)
 data NSQualifier = NSQualDomain NSDomainQualifier |
                    NSQualDegree NSASTC |
                    NSQualMomentabout NSASTC |
                    NSQualLogbase NSASTC
-                     deriving (Eq, Ord, Typeable, Data)
+                     deriving (Eq, Ord, Typeable, Data, Show)

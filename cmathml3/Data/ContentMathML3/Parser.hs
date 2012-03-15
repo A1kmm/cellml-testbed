@@ -21,7 +21,7 @@ import Data.Char
 import qualified Text.XML.HXT.DOM.XmlNode as XN
 import qualified Data.Map as M
 
-newtype InvalidMathML = InvalidMathML String
+newtype InvalidMathML = InvalidMathML String deriving (Show, Eq, Ord)
 instance Error InvalidMathML where
   strMsg m = InvalidMathML m
 type PossibleMathMLError a = Either InvalidMathML a
@@ -43,7 +43,7 @@ melemExcluding lexcl =
      (arrL $ \v -> if ((XN.getName v) `elem` jlexcl) then [] else [v])
 
 parseMathML :: ArrowXml a => a XmlTree (PME NSASTC)
-parseMathML = melem "math" /> parseMathMLExpression
+parseMathML = propagateNamespaces >>> melem "math" /> parseMathMLExpression
 
 parseInt :: (Monad m, Integral a) => Int -> String -> String -> m a
 parseInt base n v =

@@ -12,10 +12,10 @@ Description: Data model, parser, serialiser and basic transformations for workin
 Category: Math
 Category: XML
 
-Test-Suite mathtest
-    Type: exitcode-stdio-1.0
+Executable mathtest
+    -- Type: exitcode-stdio-1.0
     Main-Is: tests/TestMain.hs    
-    Build-Depends: base, Cabal >= 1.9.2
+    Build-Depends: base, Cabal >= 1.9.2, filepath
 
 Library
     Exposed-Modules: Data.ContentMathML3,
