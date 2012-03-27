@@ -128,7 +128,7 @@ monadicEA' f = monadicEA $ \v -> ErrorT (return v) >>= f
 unmonadicEA :: ArrowApply a => a b (PME c) -> b -> ErrorT InvalidMathML (ArrowAsMonad a) c
 unmonadicEA a f = ErrorT (unmonadicA a f)
 
-parseMaybeSemantics :: ArrowXml a => a XmlTree (PME c) -> a XmlTree (PME (MaybeSemantics c))
+parseMaybeSemantics :: ArrowXml a => a XmlTree (PME c) -> a XmlTree (PME (WithMaybeSemantics c))
 parseMaybeSemantics f =
   (melem "semantics" >>> (monadicEA $ \el -> do
       common <- unmonadicEA parseCommon el
@@ -137,21 +137,20 @@ parseMaybeSemantics f =
       cd <- lift $ unmonadicA (maybeAttr "cd") el
       n <- lift $ unmonadicA (maybeAttr "name") el
       fv <- unmonadicEA f el
-      return $ Semantics { semanticsCommon = common,
-                           semanticsCD = cd,
-                           semanticsName = n,
-                           unSemantics = fv,
-                           semanticsAnnotationXml = xmlAn,
-                           semanticsAnnotation = an }
-                         )) <+> liftAM NoSemantics f
+      return $ WithMaybeSemantics (Just Semantics { semanticsCommon = common,
+                                                    semanticsCD = cd,
+                                                    semanticsName = n,
+                                                    semanticsAnnotationXml = xmlAn,
+                                                    semanticsAnnotation = an }) fv
+                         )) <+> liftAM (WithMaybeSemantics Nothing) f
 
 maybeAttr :: ArrowXml a => String -> a XmlTree (Maybe String)
-maybeAttr = liftA listToMaybe . listA . getAttrValue
+maybeAttr = liftA listToMaybe . listA . getAttrValue0
 
 attrOrFail :: ArrowXml a => String -> String -> a XmlTree (PME String)
 attrOrFail why attrname =
   liftA (maybe (Left . InvalidMathML $ why) Right . listToMaybe)
-        (listA $ getAttrValue attrname)
+        (listA $ getAttrValue0 attrname)
 
 parseWithNSCommon :: ArrowXml a => a XmlTree (PME c) -> a XmlTree (PME (WithNSCommon c))
 parseWithNSCommon f = monadicEA $ \el -> do
@@ -206,7 +205,7 @@ parseNSConstantPart b = monadicEA $ \el -> do
       () | t == "integer" -> parsePackContents NSCnInteger (parseInt b)
          | t == "real" -> parsePackContents NSCnReal (parseReal b)
          | t == "double" -> parsePackContents NSCnDouble (parseReal b)
-         | t == "hexdouble" -> parsePackContents (NSCnDouble . intBitPatternToDouble)
+         | t == "hexdouble" -> parsePackContents (NSCnHexDouble . intBitPatternToDouble)
                                                  (parseInt 16)
          | t == "e-notation" -> parseSep2Pack NSCnENotation parseReal
          | t == "rational" -> parseSep2Pack NSCnRational parseInt
@@ -264,7 +263,7 @@ parseNSAST =
   (melem "csymbol" >>>
      liftAM3 NSCsymbol
              (alwaysSuccessA $ maybeAttr "cd")
-             (attrOrFail "Expected type attribute on csymbol" "type")
+             (alwaysSuccessA $ maybeAttr "type")
              parseNSSymbolContent) <+>
   (melem "cs" >>> liftAM NSCs (alwaysSuccessA extractChildText)) <+>
   (melem "apply" >>> (monadicEA $ \app -> do
@@ -301,7 +300,9 @@ parseNSAST =
                                                liftAM Just (parseWithNSCommon (melem "otherwise" />
                                                                                parseMathMLExpression)))))) <+>
   (melem "relation" >>>
-     liftAM NSRelation (listAM (getChildren >>> parseMathMLExpression))) <+>
+     liftAM2 NSRelation ((listA getChildren >>^ head) >>> parseMathMLExpression)
+                        (listAM ((listA getChildren >>^ tail) >>> unlistA >>> parseMathMLExpression))
+  ) <+>
   (melem "function" >>>
      liftAM NSFunction (listAM (getChildren >>> parseMathMLExpression) >>>
                         monadicEA' (exactlyOneOrError "expression child of function"))) <+>
@@ -341,10 +342,29 @@ parseNSAST =
      dom <- unmonadicEA (listAM (getChildren >>> parseDomainQualifier)) el
      rows <- unmonadicEA (listAM (getChildren >>> melem "matrixrow" >>>
                                   parseWithNSCommon parseMatrixRow)) el
-     return $ NSMatrix bv dom rows
+     if rows == []
+       then return $ NSMatrixByRow rows
+       else do
+         children <- unmonadicEA (listAM (getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
+         firstChild <- exactlyOneOrError "MathML expressions inside matrix" children
+         return $ NSMatrixByFunction bv dom firstChild
    )) <+>
   (melem "tendsto" >>>
    alwaysSuccessA (liftA NSTendsto (maybeAttr "type"))) <+>
+  (melem "list" >>>
+   (monadicEA $ \el -> do   
+       bv <- unmonadicEA (listAM (getChildren >>> melem "bvar" >>> parseBvar)) el
+       children <- unmonadicEA (listAM (getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
+       dom <- unmonadicEA (listAM (getChildren >>> parseDomainQualifier)) el
+       return $ NSList bv dom children
+   )) <+>
+  (melem "set" >>>
+   (monadicEA $ \el -> do   
+       bv <- unmonadicEA (listAM (getChildren >>> melem "bvar" >>> parseBvar)) el
+       children <- unmonadicEA (listAM (getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
+       dom <- unmonadicEA (listAM (getChildren >>> parseDomainQualifier)) el
+       return $ NSSet bv dom children
+   )) <+>  
   (foldl (<+>) zeroArrow $
      map (\(n,v) -> melem n >>>
                     (alwaysSuccessA . arr . const $ v)) $
@@ -365,7 +385,7 @@ parseNSAST =
      ("approx", NSApprox), ("factorof", NSFactorof),
      ("int", NSInt), ("diff", NSDiff), ("partialdiff", NSPartialdiff),
      ("divergence", NSDivergence), ("grad", NSGrad), ("curl", NSCurl),
-     ("laplacian", NSLaplacian), ("set", NSSet), ("list", NSList),
+     ("laplacian", NSLaplacian),
      ("union", NSUnion), ("intersect", NSIntersect),
      ("cartesianproduct", NSCartesianProduct), ("in", NSIn),
      ("notin", NSNotIn), ("notsubset", NSNotSubset),

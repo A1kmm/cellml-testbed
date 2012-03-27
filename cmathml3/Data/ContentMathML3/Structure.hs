@@ -6,6 +6,7 @@ import Text.XML.HXT.DOM.TypeDefs
 import Data.ContentMathML3.XNodeOrd
 import Data.Data  
 import Data.Typeable
+import Data.Maybe
 
 -- | Represents the attributes common to all strict MathML 3 content elements.
 data Common = Common {
@@ -42,25 +43,33 @@ data VariableType = CiInteger           -- ^ An integer-valued variable.
                   deriving (Eq, Ord, Typeable, Data, Show)
 
 data WithCommon a = WithCommon Common a deriving (Eq, Ord, Typeable, Data, Show)
-data MaybeSemantics a = Semantics {
+data Semantics = Semantics {
   semanticsCommon :: Common,
   semanticsCD :: Maybe String,
   semanticsName :: Maybe String,
-  unSemantics :: a, 
   semanticsAnnotationXml :: [XmlTree],
   semanticsAnnotation :: [XmlTree]
-  } | NoSemantics a deriving (Eq, Ord, Typeable, Data, Show)
+  } deriving (Eq, Ord, Typeable, Data, Show)
+data WithMaybeSemantics a = WithMaybeSemantics (Maybe Semantics) a deriving (Eq, Ord, Typeable, Data, Show)
+defaultSemantics = Semantics commonDefault Nothing Nothing [] []
+withDefaultSemantics a = WithMaybeSemantics (Just defaultSemantics) a
+
+noSemCom :: a -> WithMaybeSemantics (WithCommon a)
+noSemCom a = WithMaybeSemantics Nothing (WithCommon commonDefault a)
+
+noNSSemCom :: a -> WithMaybeSemantics (WithNSCommon a)
+noNSSemCom a = WithMaybeSemantics Nothing (WithNSCommon nsCommonDefault a)
 
 -- | Strict MathML 3 Abstract Syntax Tree
-type ASTC = MaybeSemantics (WithCommon AST)
+type ASTC = WithMaybeSemantics (WithCommon AST)
 
-data Ci = Ci (Maybe VariableType) String deriving (Eq, Ord, Typeable, Data, Show)
+data Ci = Ci String deriving (Eq, Ord, Typeable, Data, Show)
 type CCi = WithCommon Ci
 
 -- | Strict Abstract Syntax Tree, without common information on tree root
 data AST = Cn ConstantPart                                  -- ^ Constant
-         | ASTCi (CCi)                                      -- ^ Variable
-         | Csymbol { csymbolContentDictionary :: String,    -- ^ The OpenMath cd
+         | ASTCi Ci                                         -- ^ Variable
+         | Csymbol { csymbolContentDictionary :: Maybe String,  -- ^ The OpenMath cd
                      csymbolSymbolName :: String            -- ^ The name in the cd
                    }                                        -- ^ External symbol
          | Cs String                                        -- ^ String literal
@@ -68,7 +77,7 @@ data AST = Cn ConstantPart                                  -- ^ Constant
                    applyOperands :: [ASTC]                  -- ^ The operands to use
                  }                                          -- ^ Function application
          | Bind { bindOperator :: ASTC,                     -- ^ The binding operator
-                  bindBvar :: [MaybeSemantics (CCi)],       -- ^ The bound variables
+                  bindBvar :: [WithMaybeSemantics (CCi)],   -- ^ The bound variables
                   bindExpression :: ASTC                    -- ^ The expression
                 }                                           -- ^ Binding
          | Error { errorType :: ASTC, errorArgs :: [ASTC] } -- ^ A math error
@@ -89,7 +98,7 @@ nsCommonDefault = NSCommon commonDefault Nothing Nothing
 data WithNSCommon a = WithNSCommon NSCommon a deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | Non-strict MathML 3 Abstract Syntax Tree
-type NSASTC = MaybeSemantics (WithNSCommon NSAST)
+type NSASTC = WithMaybeSemantics (WithNSCommon NSAST)
 
 -- | A non-strict constant (cn) value representation.
 data NSConstantPart = NSCnInteger Int                    -- ^ An integer constant
@@ -121,7 +130,7 @@ data NSSymbolContent = NSCiText String                  -- ^ A named element
 data NSCi = NSCi (Maybe NSVariableType) NSSymbolContent deriving (Eq, Ord, Typeable, Data, Show)
 
 -- | A bound variable
-data NSBvar = NSBvar { bvarCi :: MaybeSemantics (WithNSCommon NSCi), -- ^ The inner ci
+data NSBvar = NSBvar { bvarCi :: WithMaybeSemantics (WithNSCommon NSCi), -- ^ The inner ci
                        bvarDegree :: Maybe NSASTC           -- ^ The degree (e.g. for diff)
                      } deriving (Eq, Ord, Typeable, Data, Show)
 
@@ -132,31 +141,31 @@ data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent i
              | NSASTCi NSCi -- ^ A ci element
                -- | A csymbol element
              | NSCsymbol { nsCsymbolContentDictionary :: Maybe String,
-                           nsCsymbolSymbolType :: String, 
+                           nsCsymbolSymbolType :: Maybe String, 
                            nsCsymbolContent :: NSSymbolContent }
              | NSCs String -- ^ A string constant (cs)
              | NSApply { nsApplyOperator :: NSASTC,
                          nsApplyBvar :: [NSBvar],
                          nsApplyQualifier :: [NSQualifier],
                          nsApplyOperands :: [NSASTC] }   -- ^ Function application
-             | NSBind { nsApplyOperator :: NSASTC,
-                        nsApplyBvar :: [NSBvar],
-                        nsApplyQualifiers :: [NSQualifier],
-                        nsApplyOperands :: [NSASTC] }    -- ^ Function binding
+             | NSBind { nsBindOperator :: NSASTC,
+                        nsBindBvar :: [NSBvar],
+                        nsBindQualifiers :: [NSQualifier],
+                        nsBindOperands :: [NSASTC] }    -- ^ Function binding
              | NSError { nsErrorType :: NSASTC,
                          nsErrorArgs :: [NSASTC] }       -- ^ Error
              | NSCBytes String                           -- ^ A string of bytes.
                -- | A piecewise expression
              | NSPiecewise ([WithNSCommon (NSASTC, NSASTC)], Maybe (WithNSCommon NSASTC))
                -- | A (deprecated) relation
-             | NSRelation [NSASTC]
+             | NSRelation NSASTC [NSASTC]
                -- | A (deprecated) function
              | NSFunction NSASTC
                -- | A (deprecated) declare
              | NSDeclare { nsDeclareType :: Maybe String,
                            nsScope :: Maybe String,
                            nsNArgs :: Maybe Int,
-                           nsOccurrence :: Maybe NSDeclareOccurrence, 
+                           nsOccurrence :: Maybe NSDeclareOccurrence,
                            nsDeclareExprs :: [NSASTC] }
              | NSInverse                               -- ^ Inverse
              | NSIdent                                 -- ^ Identify function
@@ -167,7 +176,7 @@ data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent i
              | NSLog                                   -- ^ Log
              | NSMoment                                -- ^ Moment
              | NSLambda { nsLambdaBVar :: [NSBvar],
-                          nsLambdaDomain :: [NSDomainQualifier], 
+                          nsLambdaDomain :: [NSDomainQualifier],
                           nsLambdaExpr :: NSASTC }     -- ^ Lambda function
              | NSCompose                               -- ^ Compose
              | NSQuotient                              -- ^ Quotient
@@ -215,8 +224,8 @@ data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent i
              | NSGrad                                  -- ^ Gradient
              | NSCurl                                  -- ^ Curl
              | NSLaplacian                             -- ^ Laplacian
-             | NSSet                                   -- ^ Set
-             | NSList                                  -- ^ List
+             | NSSet [NSBvar] [NSDomainQualifier] [NSASTC] -- ^ Set
+             | NSList [NSBvar] [NSDomainQualifier] [NSASTC] -- ^ List
              | NSUnion                                 -- ^ Union
              | NSIntersect                             -- ^ Intersection
              | NSCartesianProduct                      -- ^ Cartesian product
@@ -261,11 +270,12 @@ data NSAST = NSCn { nsCnBase :: Maybe Int,     -- ^ The base used to represent i
              | NSMedian                                -- ^ Median
              | NSMode                                  -- ^ Mode
              | NSVector { nsVectorBvar :: [NSBvar],
-                          nsVectorDomain :: [NSDomainQualifier], 
+                          nsVectorDomain :: [NSDomainQualifier],
                           nsVectorExpressions :: [NSASTC] } -- ^ Vector constructor
-             | NSMatrix { nsMatrixBvar :: [NSBvar],
-                          nsMatrixDomain :: [NSDomainQualifier],
-                          nsMatrixRows :: [WithNSCommon NSMatrixRow] } -- ^ Matrix
+             | NSMatrixByRow [WithNSCommon NSMatrixRow]
+             | NSMatrixByFunction { nsMatrixBvar :: [NSBvar],
+                                    nsMatrixDomain :: [NSDomainQualifier],
+                                    nsMatrixExpr :: NSASTC } -- ^ Matrix
              | NSDeterminant                           -- ^ Determinant
              | NSTranspose                             -- ^ Transpose
              | NSSelector                              -- ^ Selector
@@ -311,3 +321,69 @@ data NSQualifier = NSQualDomain NSDomainQualifier |
                    NSQualMomentabout NSASTC |
                    NSQualLogbase NSASTC
                      deriving (Eq, Ord, Typeable, Data, Show)
+
+class CanHaveDomain a where
+  getDomains :: a -> [NSDomainQualifier]
+  setDomains :: a -> [NSDomainQualifier] -> a
+  getBvars :: a -> [NSBvar]
+  setBvars :: a -> [NSBvar] -> a
+
+instance CanHaveDomain NSAST where
+  getDomains (NSLambda _ dq _) = dq
+  getDomains (NSSet _ dq _) = dq
+  getDomains (NSList _ dq _) = dq
+  getDomains (NSVector _ dq _) = dq
+  getDomains (NSMatrixByFunction _ dq _) = dq
+  getDomains (NSApply _ _ q _) = mapMaybe (\qv ->
+                                            case qv of
+                                              NSQualDomain d -> Just d
+                                              _ -> Nothing) q
+  getDomains (NSBind _ _ q _) = mapMaybe (\qv ->
+                                            case qv of
+                                              NSQualDomain d -> Just d
+                                              _ -> Nothing) q
+  getDomains _ = []
+
+  setDomains (NSLambda a _ c) dq = NSLambda a dq c
+  setDomains (NSSet a _ c) dq = NSSet a dq c
+  setDomains (NSList a _ c) dq = NSList a dq c
+  setDomains (NSVector a _ c) dq = NSVector a dq c
+  setDomains (NSMatrixByFunction a _ c) dq = NSMatrixByFunction a dq c
+  setDomains (NSApply a b c d) dq = NSApply a b (map NSQualDomain dq ++
+                                                 filter (\qv ->
+                                                          case qv of
+                                                            NSQualDomain d -> False
+                                                            _ -> True
+                                                        ) c) d
+  setDomains (NSBind a b c d) dq = NSBind a b (map NSQualDomain dq ++
+                                               filter (\qv ->
+                                                        case qv of
+                                                          NSQualDomain d -> False
+                                                          _ -> True
+                                                      ) c) d
+  setDomains x _ = x
+
+  getBvars (NSLambda bv _ _) = bv
+  getBvars (NSSet bv _ _) = bv
+  getBvars (NSList bv _ _) = bv
+  getBvars (NSVector bv _ _) = bv
+  getBvars (NSMatrixByFunction bv _ _) = bv
+  getBvars (NSApply _ bv _ _) = bv
+  getBvars (NSBind _ bv _ _) = bv
+  getBvars _ = []
+  
+  setBvars (NSLambda _ b c) bv = NSLambda bv b c
+  setBvars (NSSet _ b c) bv = NSSet bv b c
+  setBvars (NSList _ b c) bv = NSSet bv b c
+  setBvars (NSVector _ b c) bv = NSVector bv b c
+  setBvars (NSMatrixByFunction _ b c) bv = NSMatrixByFunction bv b c
+  setBvars (NSApply a _ c d) bv = NSApply a bv c d
+  setBvars (NSBind a _ c d) bv = NSBind a bv c d
+  setBvars x _ = x
+
+instance CanHaveDomain NSMatrixRow where
+  getDomains (NSMatrixRow _ dq _) = dq
+  setDomains (NSMatrixRow a _ c) dq = NSMatrixRow a dq c
+  
+  getBvars (NSMatrixRow bv _ _) = bv
+  setBvars (NSMatrixRow _ b c) bv = NSMatrixRow bv b c

@@ -20,7 +20,8 @@ Executable mathtest
 Library
     Exposed-Modules: Data.ContentMathML3,
                      Data.ContentMathML3.Structure,
-                     Data.ContentMathML3.Parser
+                     Data.ContentMathML3.Parser,
+                     Data.ContentMathML3.NSToS
     Other-Modules: Data.ContentMathML3.XNodeOrd
     Build-Depends: hxt >= 9 && <10,
                    base >= 3,
@@ -28,4 +29,7 @@ Library
                    monads-tf,
                    transformers,
                    parsec,
-                   containers
+                   containers,
+                   url,
+                   array,
+                   syb
