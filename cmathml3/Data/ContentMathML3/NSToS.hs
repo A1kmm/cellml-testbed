@@ -1,7 +1,7 @@
 {-# LANGUAGE RankNTypes,PatternGuards #-}
 
 -- | A module for the translation of non-strict MathML 3 to strict form
-module Data.ContentMathML3.NSToS
+module Data.ContentMathML3.NSToS (nsToStrict)
 where
 
 import Data.ContentMathML3.Structure
