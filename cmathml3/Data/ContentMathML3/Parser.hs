@@ -21,7 +21,7 @@ import Data.Char
 import qualified Text.XML.HXT.DOM.XmlNode as XN
 import qualified Data.Map as M
 
-newtype InvalidMathML = InvalidMathML String deriving (Show, Eq, Ord)
+newtype InvalidMathML = InvalidMathML { unInvalidMathML :: String } deriving (Show, Eq, Ord)
 instance Error InvalidMathML where
   strMsg m = InvalidMathML m
 type PossibleMathMLError a = Either InvalidMathML a
@@ -147,9 +147,9 @@ parseMaybeSemantics f =
 maybeAttr :: ArrowXml a => String -> a XmlTree (Maybe String)
 maybeAttr = liftA listToMaybe . listA . getAttrValue0
 
-attrOrFail :: ArrowXml a => String -> String -> a XmlTree (PME String)
+attrOrFail :: (ArrowXml a, Monad m) => String -> String -> a XmlTree (m String)
 attrOrFail why attrname =
-  liftA (maybe (Left . InvalidMathML $ why) Right . listToMaybe)
+  liftA (maybe (fail why) return . listToMaybe)
         (listA $ getAttrValue0 attrname)
 
 parseWithNSCommon :: ArrowXml a => a XmlTree (PME c) -> a XmlTree (PME (WithNSCommon c))
@@ -428,15 +428,16 @@ getNthElemA el n = listA getChildren >>^ (\l -> let v = drop n l in
                                             if null v then Left (InvalidMathML (el ++ ": Expected at least " ++ show (n + 1) ++ " child elements"))
                                                       else Right (head v))
 
-listAM :: (ArrowList a) => a b (PME c) -> a b (PME [c])
-listAM a =
+listAM :: (ArrowList a, Monad m) => a b (m c) -> a b (m [c])
+listAM a = {-
   let
     leftOrRightList :: Either e a -> Either e [a] -> Either e [a]
     leftOrRightList _ l@(Left _) = l
     leftOrRightList (Left l) _ = Left l
     leftOrRightList (Right e) (Right l) = Right (e:l)
-  in
-   listA a >>^ (foldr leftOrRightList (Right []))
+  in -}
+   listA a >>^ sequence {- (foldr leftOrRightList (Right [])) -}
+
 listToMaybeMax1 :: (ArrowApply a, ArrowList a, Arrow a) => String -> a b (PME c) -> a b (PME (Maybe c))
 listToMaybeMax1 n a = (monadicEA $ \b -> do
                           alist <- unmonadicEA (listAM a) b
