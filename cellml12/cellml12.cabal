@@ -1,0 +1,32 @@
+Name: cellml12
+Version: 0.1
+Cabal-Version: >= 1.6
+Build-Type: Simple
+License: BSD3
+License-File: LICENSE
+Author: Andrew Miller
+Copyright: (C) 2012 The University of Auckland
+Maintainer: ak.miller@auckland.ac.nz
+Stability: experimental
+Synopsis: Data model, parser, and serialiser for CellML 1.2 (draft)
+Description: Data model, parser, and serialiser for working with Andrew's CellML 1.2 draft
+Category: Math
+Category: XML
+Source-Repository head
+    Type:     git
+    Location: https://github.com/A1kmm/cellml-testbed/
+
+Library
+    Exposed-Modules: Data.CellML12.Parser,
+                     Data.CellML12.Structure
+    Build-Depends: hxt >= 9 && <10,
+                   base >= 3 && < 5,
+                   arrowapply-utils == 0.2,
+                   cmathml3 >= 0.1,
+                   monads-tf,
+                   transformers,
+                   parsec,
+                   containers,
+                   url,
+                   array,
+                   syb
