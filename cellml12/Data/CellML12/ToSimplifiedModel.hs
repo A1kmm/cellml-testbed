@@ -24,11 +24,10 @@ type TypeTable = M.Map (ModelPath, String) String
 type UnitsTable = M.Map (ModelPath, String) CanonicalUnits
 
 -- | Load a model and simplify it into a list of mathematical equations.
-buildSimplifiedModel :: (Monad m, MonadIO m, ModelLoader m) => String -> m (Either InvalidCellML SimplifiedModel)
+buildSimplifiedModel :: (Monad m, ModelLoader m) => String -> m (Either InvalidCellML SimplifiedModel)
 buildSimplifiedModel mpath = runErrorT $ do
   model <- ErrorT (loadModel mpath "")
   comps <- findRelevantComponents model
-  liftIO $ print . map snd $ comps
   let typeTable = buildTypeTable model comps
   unitsTable <- buildUnitsTable model comps
   (varMap, varInfo) <- buildVariableInfo model comps unitsTable
@@ -325,7 +324,7 @@ selectDescendents oldModPaths m clist allEnc acp = do
   let toNew = mapMaybe (\(p, cn1, cn2) ->
                          maybe Nothing (\_ -> maybe (Just (p, cn2))
                                                       (const Nothing) (M.lookup (p, cn2) acp))
-                               (M.lookup (p, cn1) acp)) allEnc              
+                               (M.lookup (p, cn1) acp)) allEnc
   clist' <- forM toNew $ \(p, n) -> do
     newm <- pathToModel m p
     findSpecificComponent p newm n

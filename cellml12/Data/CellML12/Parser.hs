@@ -150,20 +150,20 @@ parseVariable = celem "variable" >>> parseWithCommon (
                                                      )
 
 parseMapVariables :: ArrowXml a => a XmlTree (PCE (WithCommon (String, String)))
-parseMapVariables = celem "map_variables" /> parseWithCommon (
+parseMapVariables = celem "map_variables" >>> parseWithCommon (
   liftAM2 (,) (M.attrOrFail "Missing variable_1 on map_variables" "variable_1")
               (M.attrOrFail "Missing variable_2 on map_variables" "variable_2")
                                                              )
 
 parseImportComponent :: ArrowXml a => a XmlTree (PCE (WithCommon ImportComponent))
-parseImportComponent = celem "component" /> parseWithCommon (
+parseImportComponent = celem "component" >>> parseWithCommon (
   liftAM2 ImportComponent
     (M.attrOrFail "Missing name attribute on import component" "name")
     (M.attrOrFail "Missing component_ref attribute on import component" "component_ref")
                                                             )
 
 parseImportUnits :: ArrowXml a => a XmlTree (PCE (WithCommon ImportUnits))
-parseImportUnits = celem "units" /> parseWithCommon (
+parseImportUnits = celem "units" >>> parseWithCommon (
   liftAM2 ImportUnits
     (M.attrOrFail "Missing name attribute on import units" "name")
     (M.attrOrFail "Missing units_ref attribute on import units" "units_ref")

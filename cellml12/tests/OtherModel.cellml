@@ -1,9 +1,9 @@
 <model xmlns="http://www.cellml.org/cellml/1.2#" xmlns:xlink="http://www.w3.org/1999/xlink">
   <encapsulation>
-    <component_ref name="mycomp2">
-      <component_ref name="mycomp3"/>
+    <component_ref component="mycomp2">
+      <component_ref component="mycomp3"/>
     </component_ref>
-  </enscapsulation>
+  </encapsulation>
 
   <component name="mycomp2">
     <variable name="z" type="real" units="second"/>
@@ -12,7 +12,6 @@
         <ci>z</ci><ci>z</ci>
       </apply>
     </math>   
-  </component>
   </component>
 
   <component name="mycomp3">
