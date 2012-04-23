@@ -1,0 +1,26 @@
+<model xmlns="http://www.cellml.org/cellml/1.2#" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <encapsulation>
+    <component_ref name="mycomp2">
+      <component_ref name="mycomp3"/>
+    </component_ref>
+  </enscapsulation>
+
+  <component name="mycomp2">
+    <variable name="z" type="real" units="second"/>
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply><eq/>
+        <ci>z</ci><ci>z</ci>
+      </apply>
+    </math>   
+  </component>
+  </component>
+
+  <component name="mycomp3">
+    <variable name="y" type="real" units="second"/>
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply><eq/>
+        <ci>y</ci><ci>y</ci>
+      </apply>
+    </math>   
+  </component>
+</model>

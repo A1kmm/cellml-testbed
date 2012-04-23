@@ -1,0 +1,13 @@
+<model xmlns="http://www.cellml.org/cellml/1.2#" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <component name="mycomp">
+    <variable name="x" type="real" units="second"/>
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply><eq/>
+        <ci>x</ci><ci>x</ci>
+      </apply>
+    </math>
+  </component>
+  <import name="myimp" xlink:href="OtherModel.cellml">
+    <component name="thatcomp" component_ref="mycomp2"/>
+  </import>
+</model>

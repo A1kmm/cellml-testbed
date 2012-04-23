@@ -1,20 +1,24 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 module Data.CellML12.Structure
 where
 import qualified Data.ContentMathML3.Structure as MathML
 import Text.XML.HXT.DOM.TypeDefs
-  
+import Data.Data
+import Data.Typeable
+import qualified Data.Map as M
+
 -- | Common represents the attributes and elements that may appear in or on every element
 -- | in the CellML namespace.
 data Common = Common { commonCmetaId :: Maybe String,        -- ^ The cmeta:id attribute
                        commonRDF :: [XmlTree],               -- ^ Any RDF/XML.
                        commonExtensionElements :: [XmlTree], -- ^ Any extension elements.
                        commonExtensionAttrs :: [XmlTree]     -- ^ Any extension attributes.
-                     }
+                     } deriving (Eq, Ord, Show, Typeable, Data)
 -- | A value of common corresponding to no additional attributes or elements.
 defaultCommon = Common Nothing [] [] []
 
 -- | Adds the Common attributes to an existing type.
-data WithCommon a = WithCommon Common a
+data WithCommon a = WithCommon { withCommonCommon :: Common, withoutCommon :: a } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents the CellML Model element.
 data Model = Model {
@@ -28,7 +32,7 @@ data Model = Model {
     modelImports :: [WithCommon Import],
     -- | The top-level units defined in the XML document.
     modelUnits :: [WithCommon Units]
-        }
+        } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML component element.
 data Component = Component {
@@ -40,7 +44,7 @@ data Component = Component {
     componentMaths :: [MathML.ASTC],
     -- The units defined within this component.
     componentUnits :: [WithCommon Units]
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML variable element.
 data Variable = Variable {
@@ -54,7 +58,7 @@ data Variable = Variable {
   variablePrivateInterface :: Bool,
   -- | The value of the (optional) units attribute.
   variableUnits :: Maybe String
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML units element.
 data Units = Units {
@@ -64,10 +68,12 @@ data Units = Units {
   unitsBaseUnits :: Bool,
   -- | The units children.
   unitsDefinition :: [WithCommon Unit]
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML unit element.
 data Unit = Unit {
+  -- | The units name being referenced.
+  unitUnits :: String,
   -- | The value of the prefix attribute.
   unitPrefix :: Double,
   -- | The value of the exponent attribute.
@@ -76,7 +82,7 @@ data Unit = Unit {
   unitMultiplier :: Double,
   -- | The value of the offset attribute.
   unitOffset :: Double
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML connection element.
 data Connection = Connection {
@@ -86,13 +92,13 @@ data Connection = Connection {
   connectionComponent2 :: String,
   -- | The map_variables elements, by first and second variable name.
   connectionMapVariables :: [WithCommon (String, String)]
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML encapsulation element.
 data Encapsulation = Encapsulation {
   -- | The component_ref children of the encapsulation element.
   encapsulationComponentRefs :: [WithCommon ComponentRef]
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML component_ref element.
 data ComponentRef = ComponentRef {
@@ -100,7 +106,7 @@ data ComponentRef = ComponentRef {
   componentRefComponent :: String,
   -- | The component_ref children of the element.
   componentRefComponentRefs :: [WithCommon ComponentRef]
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML import element.
 data Import = Import {
@@ -112,7 +118,7 @@ data Import = Import {
   importComponent :: [WithCommon ImportComponent],
   -- | The units element children.
   importUnits :: [WithCommon ImportUnits]
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML component element, in an import element
 data ImportComponent = ImportComponent {
@@ -120,7 +126,7 @@ data ImportComponent = ImportComponent {
   importComponentName :: String,
   -- | The value of the component_ref attribute.
   importComponentComponentRef :: String
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)
 
 -- | Represents a CellML units element, in an import element
 data ImportUnits = ImportUnits {
@@ -128,4 +134,4 @@ data ImportUnits = ImportUnits {
   importUnitsName :: String,
   -- | The value of the component_ref attribute.
   importUnitsUnitsRef :: String
-  }
+  } deriving (Eq, Ord, Show, Typeable, Data)

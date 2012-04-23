@@ -107,7 +107,8 @@ tryParseYesNo failWhere v = fail $ "Unexpected value \"" ++ v ++ "\" on " ++ fai
 
 parseUnit :: ArrowXml a => a XmlTree (PCE (WithCommon Unit))
 parseUnit = celem "unit" >>> parseWithCommon (
-  liftAM4 Unit (M.maybeAttr "prefix" >>^ (maybe (return 0) tryParsePrefix))
+  liftAM5 Unit (M.attrOrFail "Missing units attribute on unit" "units")
+               (M.maybeAttr "prefix" >>^ (maybe (return 0) tryParsePrefix))
                (M.maybeAttr "exponent" >>^ maybe (return 1) (tryParseReal "exponent attribute on unit"))
                (M.maybeAttr "multiplier" >>^ maybe (return 1) (tryParseReal "multiplier attribute on unit"))
                (M.maybeAttr "offset" >>^ maybe (return 0) (tryParseReal "offset attribute on unit"))
