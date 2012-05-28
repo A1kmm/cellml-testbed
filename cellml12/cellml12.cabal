@@ -21,7 +21,8 @@ Library
                      Data.CellML12.Structure,
                      Data.CellML12.SimplifiedModel,
                      Data.CellML12.ToSimplifiedModel,
-                     Data.CellML12.ModelLoader
+                     Data.CellML12.ModelLoader,
+                     Data.CellML12.ModelSolver
     Build-Depends: hxt >= 9 && <10,
                    base >= 3 && < 5,
                    arrowapply-utils == 0.2,
@@ -31,4 +32,12 @@ Library
                    containers,
                    curl,
                    parsec,
-                   syb
+                   uniplate,
+                   syb,
+                   bytestring,
+                   process,
+                   temporary,
+                   array,
+                   filepath,
+                   cereal,
+                   monadio-unwrappable

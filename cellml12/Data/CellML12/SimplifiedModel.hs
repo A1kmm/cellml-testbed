@@ -26,7 +26,7 @@ data ModelPath = ModelPathStop | ModelPathComponent String ComponentPath |
                  ModelPathImport String ModelPath deriving (Eq, Ord, Typeable, Data, Show)
 data ComponentPath = ComponentPathStop | ComponentPathVariable String | ComponentPathUnits String deriving (Eq, Ord, Typeable, Data, Show)
 
-newtype VariableInfo = VariableInfo (M.Map VariableID [(ModelPath, Maybe CanonicalUnits)]) deriving (Eq, Ord, Typeable, Data, Show)
+newtype VariableInfo = VariableInfo { unvariableInfo :: (M.Map VariableID [(ModelPath, Maybe CanonicalUnits)])} deriving (Eq, Ord, Typeable, Data, Show)
 
 newtype Assertion = Assertion (M.ASTC, AssertionContext) deriving (Eq, Ord, Typeable, Data, Show)
 

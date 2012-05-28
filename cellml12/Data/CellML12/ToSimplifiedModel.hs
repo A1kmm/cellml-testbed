@@ -9,7 +9,8 @@ import Data.CellML12.IndexedModel
 import Data.CellML12.ModelLoader
 import Control.Monad.Trans.Error
 import Data.List
-import Data.Generics
+import Data.Generics.Uniplate.Operations
+import Data.Generics.Uniplate.Data
 import qualified Data.Map as M
 import Data.Map ((!))
 import qualified Data.Set as S
@@ -101,14 +102,14 @@ findParentModelPaths _ = [ModelPathStop]
 -- | Extend a ModelPath by substituting the terminal model for something else, so
 -- | the path points to something in the model the original path refers to.
 replaceModelPathStop :: ModelPath -> ModelPath -> ModelPath
-replaceModelPathStop p r = everywhere (mkT (replaceModelPathStop' r)) p
+replaceModelPathStop p r = transformBi (replaceModelPathStop' r) p
 replaceModelPathStop' r ModelPathStop = r
 replaceModelPathStop' _ v = v
 
 -- | Extend a ModelPath by substituting the terminal component for something else, so
 -- | the path points to something in the model the original path refers to.
 replaceComponentPathStop :: ModelPath -> ComponentPath -> ModelPath
-replaceComponentPathStop p r = everywhere (mkT (replaceComponentPathStop' r)) p
+replaceComponentPathStop p r = transformBi (replaceComponentPathStop' r) p
 replaceComponentPathStop' r ComponentPathStop = r
 replaceComponentPathStop' _ v = v
 
