@@ -17,7 +17,8 @@ Source-Repository head
     Location: https://github.com/A1kmm/cellml-testbed/
 
 Library
-    Exposed-Modules: Data.CellML12.Parser,
+    Exposed-Modules: 
+                     Data.CellML12.Parser,
                      Data.CellML12.Structure,
                      Data.CellML12.SimplifiedModel,
                      Data.CellML12.ToSimplifiedModel,
