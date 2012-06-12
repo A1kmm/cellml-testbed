@@ -188,6 +188,159 @@ runSolverOnDAESimplifiedModel m' setup solver =
         when (ec' /= ExitSuccess) $ fail "Problem executing integrator program"
         return ret
 
+-- | Convert a mathematical expression into a ByteString containing C code for
+-- | evaluating that expression.
+putExpression :: EvaluationPoint -> VariableMap -> M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> AST -> CodeGen ()
+
+putExpression ep vmap ctx x
+  | Just (varname, deg, isIV) <- tryGetVariableRef x = do
+    (_, _, var) <-
+      maybe (fail $ "Variable " ++ varname ++ " not found but named in ci") return $
+        M.lookup varname ctx
+    str <- maybe (fail "Cannot find C name for variable") return $
+             getVariableString (if isIV then TimeVaryingEvaluation else ep) vmap (var, deg)
+    cgAppend . LBS.pack $ str
+
+putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just cd) name))) operands)
+  | cd == "logic1" = putLogicExpression
+  | cd == "piece1" = putPieceExpression
+  | cd == "relation1" = putRelationExpression
+  | cd == "arith1" = putArithExpression
+  | cd == "transc1" = putTranscExpression
+  | cd == "rounding1" = putRoundingExpression
+  | otherwise = fail $ "Unrecognised content dictiorary " ++ cd ++ "in apply operator csymbol"
+  where
+    putLogicExpression
+      | name == "equivalent" = binaryOperator "((" ")==(" "))"
+      | name == "not" = unaryOperator "(!(" "))"
+      | name == "and" = naryOperator "((" ")&&(" "))"
+      | name == "xor" = naryOperator "(((" ")?1:0) ^ ((" ")?1:0))"
+      | name == "or" = naryOperator "((" ") || (" "))"
+      | name == "implies" = binaryOperator "((!(" ")) || (" "))"
+      | otherwise = fail $ "Unexpected logic1 operator" ++ name
+    putPieceExpression
+      | name == "piecewise" = do
+        (pieces, otherwise) <-
+          flip (flip foldM ([], Nothing)) operands $ \(pieces, otherwise) operand ->
+            case extractPiecewisePiece operand of
+              Just p -> (p:pieces, otherwise)
+              Nothing -> case extractPiecewiseOtherwise operand of
+                o@(Just _) -> (pieces, otherwise `mplus` o)
+                Nothing -> fail "Piecewise contains operands other than pieces and otherwise"
+        cgAppend "("
+        forM_ pieces $ \(val, cond) -> do
+          cgAppend "("
+          putExpression ep vmap ctx cond
+          cgAppend ")?("
+          putExpression ep vmap ctx val
+          cgAppend "):"
+        cgAppend "("
+        case otherwise of
+          Just o -> putExpression ep vmap ctx o
+          Nothing -> cgAppend "0.0/0.0"
+        cgAppend "))"
+      | otherwise = fail $ "Unknown piecewise expression " ++ name
+    putRelationExpression
+      | name == "eq" = binaryOperator "((" ")==(" "))"
+      | name == "lt" = binaryOperator "((" ")<(" "))"
+      | name == "gt" = binaryOperator "((" ")>(" "))"
+      | name == "neq" = binaryOperator "((" ")!=(" "))"
+      | name == "leq" = binaryOperator "((" ")<=(" "))"
+      | name == "geq" = binaryOperator "((" ")>=(" "))"
+      | name == "geq" = binaryOperator "((" ")>=(" "))"
+      | otherwise = fail $ "Unknown relation1 symbol " ++ name
+    putArithExpression
+      | name == "lcm" = naryOperator ("lcm(" `LBS.append` (LBS.pack . show . length $ operands)
+                                      `LBS.append` ", ") "," ")"
+      | name == "gcd" = naryOperator ("gcd(" `LBS.append` (LBS.pack . show . length $ operands)
+                                      `LBS.append` ", ") "," ")"
+      | name == "plus" = naryOperator "((" ")+(" "))"
+      | name == "unary_minus" = unaryOperator "(-(" "))"
+      | name == "minus" = binaryOperator "((" ")-(" "))"
+      | name == "times" = naryOperator "((" ")*(" "))"
+      | name == "divide" = binaryOperator "((" ")/(" "))"
+      | name == "power" = binaryOperator "pow(" "," ")"
+      | name == "abs" = unaryOperator "abs(" ")"
+      | name == "root" = binaryOperator "pow(" ", 1.0/(" "))"
+      | otherwise = fail $ "Unknown arith1 operator " ++ name
+    basicTrig = ["sin", "cos", "tan"]
+    invTrig = ["csc", "sec", "cot"]
+    putTranscExpression
+      -- XXX we could simplify the constant base case
+      | name == "log" = binaryOperator "(log(" ")/log(" "))"
+      | name == "ln" = unaryOperator "log(" ")"
+      | name == "exp" = unaryOperator "exp(" ")"
+      | name `S.member` (S.fromList basicTrig) = unaryOperator (LBS.pack $ name ++ "(") ")"
+      | name `S.member` (S.fromList $ map (++"h") basicTrig) = (LBS.pack $ name ++ "h(") ")"
+      | name `S.member` (S.fromList invTrig) =
+        unaryOperator (LBS.pack $ "(1.0 / " ++ ((M.fromList $ zip invTrig basicTrig)!!name) ++ "(") "))"
+      | name `S.member` (S.fromList $ map (++"h") invTrig) =
+        unaryOperator (LBS.pack $ "(1.0 / " ++ (((M.fromList $ zip invTrig basicTrig)!!name) ++ "h") ++ "(") "))"
+      | name `S.member` (S.fromList $ map ("arc"++) basicTrig) =
+        unaryOperator (LBS.pack $ "a" ++ name ++ "(") ")"
+      | name `S.member` (S.fromList $ map (\x -> "arc" ++ x ++ "h") basicTrig) =
+        (LBS.pack $ "arc" ++ name ++ "h(") ")"
+      | name `S.member` (S.fromList $ map ("arc"++) invTrig) =
+        unaryOperator (LBS.pack $ "a" ++ ((M.fromList $ zip invTrig basicTrig)!!name) ++ "(1.0 / (") "))"
+      | name `S.member` (S.fromList $ map (\x -> "arc" ++ x ++"h") invTrig) =
+        unaryOperator (LBS.pack $ ("a" ++ ((M.fromList $ zip invTrig basicTrig)!!name) ++ "h") ++ "(1.0 / (") "))"
+      | otherwise = fail $ "Unknown transc1 operator " ++ name
+    putRoundingExpression
+      | name == "ceiling" = unaryOperator "ceil(" ")"
+      | name == "floor" = unaryOperator "floor(" ")"
+      | name == "trunc" = unaryOperator "trunc(" ")"
+      | name == "round" = unaryOperator "round(" ")"
+      | otherwise = fail $ "Unknown rounding1 operator " ++ name
+    extractPiecewisePiece (Apply op [arg1, arg2])
+      | opIs "piece1" "piece" op = Just (stripSemCom arg1, stripSemCom arg2)
+      | otherwise = Nothing
+    extractPiecewiseOtherwise (Apply op [arg])
+      | opIs "piece1" "otherwise" op = Just arg
+      | otherwise = Nothing
+    unaryOperator a b 
+      | [operand] <- operands = do
+        cgAppend a
+        putExpression ep vmap ctx (stripSemCom operand)
+        cgAppend b
+      | otherwise = fail "Unary operator must have exactly one argument"
+    binaryOperator a b c
+      | [op1, op2] <- operands = do
+        cgAppend a
+        putExpression ep vmap ctx (stripSemCom op1)
+        cgAppend b
+        putExpression ep vmap ctx (stripSemCom op2)
+        cgAppend c
+      | otherwise = fail "Binary operator must have exactly one argument"
+    naryOperator a b c = do
+        cgAppend a
+        forM (zip [0..] operands) $ \(i, operand) -> do
+          when (i /= 0) $ cgAppend b
+          putExpression ep vmap ctx (stripSemCom operand)
+        cgAppend c        
+
+putExpression _ _ _ (Apply _ _) = fail "Apply where operator is not csymbol or other recognised form"
+
+putExpression _ _ _ (Bind _ _ _) = fail "Unexpected bind in expression"
+  
+-- We don't handle e, gamma, pi from nums1 since the simplifier has already
+-- converted them to numerical constants.
+putExpression _ _ _ (Csymbol cd name) 
+  | Just "logic1" <- cd, name == "true" = "1"
+  | Just "logic1" <- cd, name == "false" = "0"
+  | otherwise =
+  fail $ "Encountered csymbol with content dictionary" ++ (show cd) ++
+         " and name " ++ name ++ "."
+
+putExpression _ _ _ (Cs str) =
+  fail $ "Unexpected MathML cs element with contents " ++ str
+
+putExpression ep vmap ctx (Error{}) = fail "Unexpected MathML <error> element"
+
+putExpression _ _ _ (Cs str) =
+  fail $ "Unexpected MathML cbytes element with contents " ++ str
+
+putExpression _ _ _ _ = fail "Unhandled MathML expression"
+
 -- | Assign a variable to each index in the model. Note that in the case where
 -- | a derivative is constant, it actually gets two indices, one as a constant,
 -- | and one as the rate corresponding to the state variable.
@@ -267,8 +420,7 @@ substituteUnits sm@(SimplifiedModel { variableInfo = variableInfo, assertions = 
                                             Bind (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just "fns1") "lambda")))
                                                  _ (WithMaybeSemantics _ (WithCommon _ (ASTCi (Ci varName))))))]
                                                                               )))
-                                         [WithMaybeSemantics _ (WithCommon _ (ASTCi (Ci bvarName)))]
-                                      )
+                                         [WithMaybeSemantics _ (WithCommon _ (ASTCi (Ci bvarName)))])
           | Just (varOffs, varMup) <- M.lookup varName conversionFactors,
             Just (_, bvarMup) <- M.lookup bvarName conversionFactors = convertOneVariable expr (varOffs, varMup / bvarMup)
         applyConversions bvar (Apply op operands) = Apply op (map (ignoringSemCom (applyConversions bvar)) operands)
@@ -291,7 +443,7 @@ writeDAECode vmap model problem classification =
         cgAppend daeInitialSuffix
         
         cgAppend daeResidualPrefix
-        putModelResiduals vmap model
+        putModelResiduals vmap model problem classification
         cgAppend daeResidualSuffix
         
         -- To do: analytic Jacobian?
@@ -306,10 +458,10 @@ putModelSolveConsts vmap model@(SimplifiedModel { assertions = assertions }) p
                     (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
   -- Solve the system...
   foldM_ (solveSystem ConstantEvaluation vmap) S.empty eqnConst
-  -- Check the inequalities hold...
+  -- Check the inequalities hold. XXX should split them up and use them as solver
+  -- constraints as soon as all variables in them are known instead.
   mapM_ (checkInequality ConstantEvaluation vmap) ieqConst
   putByteString "return 0;"
-  return solverFuncs
 
 -- | Solve a system of one or more equations.
 -- | We have two cases: Solve by assignment of the variable on one side to the
@@ -322,7 +474,7 @@ solveSystem ep vmap known [Assertion (WithMaybeSemantics _ (WithCommon _ (Apply 
     Just vCode <- getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg) = do
       cgAppend $ LBS.pack vCode
       cgAppend " = "
-      putExpression (stripSemCom b)
+      putExpression ep vmap ctx (stripSemCom b)
       cgAppend ";\n"
       return $ S.insert (v, deg, iv) known
   | Just (vname, deg, iv) <- tryGetVariableRef (stripSemCom b),
@@ -331,7 +483,7 @@ solveSystem ep vmap known [Assertion (WithMaybeSemantics _ (WithCommon _ (Apply 
     Just vCode <- getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg) = do
       cgAppend $ LBS.pack vCode
       cgAppend " = "
-      putExpression (stripSemCom a)
+      putExpression ep vmap ctx (stripSemCom a)
       cgAppend ";\n"
       return $ S.insert (v, deg, iv) known
 solveSystem ep vmap known eqns = do
@@ -340,14 +492,13 @@ solveSystem ep vmap known eqns = do
   let allVars = S.unions $ map (S.fromList . findAssertionVariableUsage) eqns
   let newVars = allVars `S.difference` known
   let copyParams =
-    forM_ (zip [0..] (S.toList newVars)) $ \(param, (v, deg, iv)) ->
-      vName <- maybe (fail "Variable in equation not in variable map") return $
-        getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg)
-      cgAppend (LBS.pack vName)
-      cgAppend " = params["
-      cgAppend . LBS.pack . show $ param
-      cgAppend "];\n"
-      
+        forM_ (zip [0..] (S.toList newVars)) $ \(param, (v, deg, iv)) -> do
+          vName <- maybe (fail "Variable in equation not in variable map") return $
+                     getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg)
+          cgAppend (LBS.pack vName)
+          cgAppend " = params["
+          cgAppend . LBS.pack . show $ param
+          cgAppend "];\n"
   cgFunction $ do
     cgAppend "int "
     cgAppend fnName
@@ -358,11 +509,12 @@ solveSystem ep vmap known eqns = do
       cgAppend "residuals["
       cgAppend (show i)
       cgAppend "] = "
-      putExpression (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b])
+      putExpression ep vmap ctx (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b])
       cgAppend ";\n"
+      cgAppend "return 0;\n"
     cgAppend "}\n"
   cgAppend "params = DoSolve("
-  cgAppend . LBS.pack . show $ S.length newVars
+  cgAppend . LBS.pack . show $ S.size newVars
   cgAppend ", "
   cgAppend fnName
   cgAppend ");"
@@ -370,25 +522,23 @@ solveSystem ep vmap known eqns = do
   cgAppend "free(params);\n"
   return (allVars `S.union` known)
 
-putModelResiduals vars (SimplifiedModel { assertions = assertions }) =
-  let
-    recoverableRelations = S.fromList ["geq", "gt", "leq", "lt", "neq"]
-    isRecoverableError = LBS.concat ("!(":
-      ((intersperse "&&" . flip mapMaybe assertions $ \(Assertion (expr, AssertionContext varMap)) ->
-        case (stripSemCom expr) of
-          Apply (Csymbol (Just "relation1") sym) operands
-            | S.member sym recoverableRelations -> mathExpressionToCExpression (stripSemCom expr)
-          _ -> Nothing
-      ) ++ [")"]))
-  in do
-   putByteString setResiduals
-   putByteString "return ("
-   putLazyByteString isRecoverableError
-   putByteString ");\n"
+checkInequality ep vmap (Assertion (ieq, ctx)) = do
+  cgAppend "if (!("
+  putExpression ep vmap ctx (stripSemCom ieq)
+  cgAppend ")) return 1;\n"
 
-mathExpressionToCExpression = undefined
-setInitialValues = undefined
-setResiduals = undefined
+putModelResiduals vmap model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
+  forM_ (zip [0..] eqnVary) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), ctx)) ->
+    cgAppend "residuals["
+    cgAppend . LBS.pack . show $ i
+    cgAppend "] = "
+    putExpression TimeVaryingEvaluation vmap ctx (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b])
+    cgAppend ";\n"
+  cgAppend "return (("
+  forM_ (zip [0..] ieqVary) $ \(i, Assertion (ieq, ctx)) -> do
+    when (i /= 0) (cgAppend ") && (")
+    putExpression TimeVaryingEvaluation vmap ctx ieq
+  cgAppend ")) ? 0 : 1;\n"
 
 -- | A getter for parsing the output from the simulator.
 getOutput :: Int -> Get [NumericalEntry]
@@ -420,6 +570,7 @@ eraseConstantVariables m =
   in
    SimplifiedModel { variableInfo = VariableInfo vi, assertions = newAssertions }
 
+-- TODO boolean variable handling.
 -- | Classify all assertions and model variables[*] into four categories:
 -- |   1. Equations that include no 'time' dependent variables (including i.v.s).
 -- |   2. Equations that include 'time' dependent variables.
@@ -506,6 +657,8 @@ findExpressionVariableUsage (Apply op exprs) nameToVar =
 
 findExpressionVariableUsage _ _ = []
 
+-- TODO: Nothing in the secondary spec says that derivatives can only be taken
+-- on variables. Need a rule to substitute e.g. d(2x^2)/dt with y=2x^2, dy/dt
 fixHighers :: SimplifiedModel -> DAEIntegrationSetup -> Either String SimplifiedModel
 fixHighers m p =
   let
@@ -725,18 +878,6 @@ dimensionallyCompatibleUnits (CanonicalUnits { cuBases = u1 }) (CanonicalUnits {
   where
     u1e = M.toList u1
     u2e = M.toList u2
-
-convertUnits :: Expression -> CanonicalUnits -> CanonicalUnits -> Expression
-convertUnits (ConstantDoubleExpression v) src dst =
-  ConstantDoubleExpression (v * (cuMultiplier src / cuMultiplier dst) + cuOffset src - cuOffset dst)
-convertUnits (CodeString s) src dst =
-  let
-    mupStr = if cuMultiplier src == cuMultiplier dst then "" else " * " ++ show (cuMultiplier src / cuMultiplier dst)
-    offStr = if cuOffset src == cuOffset dst then "" else " + " ++ show (cuOffset src - cuOffset dst)
-  in
-   CodeString (s ++ mupStr ++ offStr)
-convertUnits (DependentExpression f) src dst = DependentExpression $ \m -> convertUnits (f m) src dst
-convertUnits ex _ _ = ex
 
 simplifyMaths m (WithMaybeSemantics _ (WithCommon _ x)) =
   liftM noSemCom $ (simplifyMathAST m x)
