@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards, Rank2Types, TypeFamilies, FlexibleContexts, UndecidableInstances, OverloadedStrings #-}
+{-# LANGUAGE PatternGuards, Rank2Types, TypeFamilies, FlexibleContexts, UndecidableInstances, OverloadedStrings, ScopedTypeVariables #-}
 module Data.CellML12.ModelSolver where
 
 import Data.CellML12.SupportCode
@@ -80,11 +80,11 @@ newtype CodeGen a = CodeGen { runCodeGen :: (LBS.ByteString, LBS.ByteString, Int
                                             Either String (LBS.ByteString, LBS.ByteString, Int, a) }
 instance Monad CodeGen where
   return x = CodeGen (\(a,b,c) -> Right (a,b,c,x))
-  CodeGen cg1 >>= CodeGen cg2 = CodeGen (\(a,b,c) ->
-                                          case cg1 (a, b, c) of
-                                            Right (a', b', c', x) -> cg2 x (a', b', c')
-                                            Left e -> Left e)
-  fail e = CodeGen (Left e)
+  CodeGen cg1 >>= cg2 = CodeGen (\(a,b,c) ->
+                                  case cg1 (a, b, c) of
+                                    Right (a', b', c', x) -> (runCodeGen $ cg2 x) (a', b', c')
+                                    Left e -> Left e)
+  fail e = CodeGen (const $ Left e)
 
 cgAllocateIndex :: CodeGen Int
 cgAllocateIndex = CodeGen $ \(s1, s2, idx) -> Right (s1, s2, idx + 1, idx)
@@ -98,7 +98,7 @@ cgFunction (CodeGen cg) = CodeGen $ \(s1, s2, idx) ->
 cgAppend :: LBS.ByteString -> CodeGen ()
 cgAppend bs = CodeGen $ \(s1, s2, idx) -> Right (s1 `LBS.append` bs, s2, idx, ())
 
-type SolverInternalsT m a = ReaderT (Handle, M.Map (VariableID, Int) Int, DAEIntegrationSetup) (StateT LBS.ByteString m) a
+type SolverInternalsT m a = ReaderT (Handle, VariableMap, DAEIntegrationSetup) (StateT LBS.ByteString m) a
 newtype SolverT m a = SolverT {unsolver :: SolverInternalsT m a }
 
 instance Monad m => Monad (SolverT m) where
@@ -108,32 +108,32 @@ instance MonadTrans SolverT where
   lift x = SolverT (lift . lift $ x)
 instance MonadIO m => MonadIO (SolverT m) where
   liftIO = lift . liftIO
-instance (MonadIO m, MonadIOUnwrappable (ReaderT (Handle, M.Map (VariableID, Int) Int, DAEIntegrationSetup) (StateT LBS.ByteString m))) =>
+instance (MonadIO m, MonadIOUnwrappable (ReaderT (Handle, VariableMap, DAEIntegrationSetup) (StateT LBS.ByteString m))) =>
          MonadIOUnwrappable (SolverT m) where
-  type MonadIOWrapType (SolverT m) = MonadIOWrapType (ReaderT (Handle, M.Map (VariableID, Int) Int, DAEIntegrationSetup) (StateT LBS.ByteString m))
-  type MonadIOStateType (SolverT m) = MonadIOStateType (ReaderT (Handle, M.Map (VariableID, Int) Int, DAEIntegrationSetup) (StateT LBS.ByteString m))
+  type MonadIOWrapType (SolverT m) = MonadIOWrapType (ReaderT (Handle, VariableMap, DAEIntegrationSetup) (StateT LBS.ByteString m))
+  type MonadIOStateType (SolverT m) = MonadIOStateType (ReaderT (Handle, VariableMap, DAEIntegrationSetup) (StateT LBS.ByteString m))
   unwrapState = SolverT unwrapState
   unwrapMonadIO s (SolverT m) = unwrapMonadIO s m
   rewrapMonadIO s v = SolverT (rewrapMonadIO s v)
 instance Monad m => MonadReader (SolverT m) where
-  type EnvType (SolverT m) = EnvType (ReaderT (Handle, M.Map (VariableID, Int) Int, DAEIntegrationSetup) (StateT LBS.ByteString m))
+  type EnvType (SolverT m) = EnvType (ReaderT (Handle, VariableMap, DAEIntegrationSetup) (StateT LBS.ByteString m))
   ask = SolverT ask
   local f (SolverT m) = SolverT (local f m)
 instance Monad m => MonadState (SolverT m) where
-  type StateType (SolverT m) = StateType (ReaderT (Handle, M.Map (VariableID, Int) Int, DAEIntegrationSetup) (StateT LBS.ByteString m))
+  type StateType (SolverT m) = StateType (ReaderT (Handle, VariableMap, DAEIntegrationSetup) (StateT LBS.ByteString m))
   get = SolverT get
   put v = SolverT (put v)
 
 solveModelWithParameters :: DAEIntegrationProblem -> SolverT (ErrorT String IO) DAEIntegrationResult
 solveModelWithParameters p = do
-  (hOut, vmap, setup) <- ask
-  let iBound = vmap !! (daeBoundVariable setup, 0)
+  (hOut, vm@(VariableMap (vmap :: M.Map (VariableID, Int) (Maybe Int, Maybe Int)) _ _), setup) <- ask
+  let iBound = fromJust . fst $ vmap !! (daeBoundVariable setup, 0)
   
   -- Send the request for the problem to be solved...
   liftIO . BS.hPutStr hOut $ runPut $ do
     -- Overrides...
     let pOverrides = mapMaybe (\(vardeg, newv) -> liftM (\v -> (v, newv)) $ M.lookup vardeg vmap) . daeParameterOverrides $ p
-    flip putListOf pOverrides $ putTwoOf (putWord32host . fromIntegral) (putFloat64le)
+    flip putListOf pOverrides $ putTwoOf (putWord32host . fromIntegral . (\(a, b) -> fromJust $ a `mplus` b)) (putFloat64le)
     -- Bvar range...
     putTwoOf putFloat64le putFloat64le . daeBVarRange $ p
     putFloat64le . daeRelativeTolerance $ p
@@ -148,7 +148,7 @@ solveModelWithParameters p = do
     (NumericalError str):d -> fail $ "Numerical problem: " ++ str
     NumericalSuccess:d -> do
       let r = (map (\x -> (x!iBound, x)) . mapMaybe onlyData $ d)
-      return $ DAEIntegrationResults { daeResultIndices = vmap, daeResults = r }
+      return $ DAEIntegrationResults { daeResultIndices = M.map (\(a, b) -> fromJust $ a `mplus` b) vmap, daeResults = r }
     _ -> fail "Incomplete results - solver program may have crashed"
 
 -- | Runs a solver monad over a particular model with a particular setup.
@@ -222,10 +222,10 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
       | name == "piecewise" = do
         (pieces, otherwise) <-
           flip (flip foldM ([], Nothing)) operands $ \(pieces, otherwise) operand ->
-            case extractPiecewisePiece operand of
-              Just p -> (p:pieces, otherwise)
-              Nothing -> case extractPiecewiseOtherwise operand of
-                o@(Just _) -> (pieces, otherwise `mplus` o)
+            case extractPiecewisePiece (stripSemCom operand) of
+              Just p -> return $ (p:pieces, otherwise)
+              Nothing -> case extractPiecewiseOtherwise (stripSemCom operand) of
+                o@(Just _) -> return $ (pieces, otherwise `mplus` o)
                 Nothing -> fail "Piecewise contains operands other than pieces and otherwise"
         cgAppend "("
         forM_ pieces $ \(val, cond) -> do
@@ -236,7 +236,7 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
           cgAppend "):"
         cgAppend "("
         case otherwise of
-          Just o -> putExpression ep vmap ctx o
+          Just o -> putExpression ep vmap ctx (stripSemCom o)
           Nothing -> cgAppend "0.0/0.0"
         cgAppend "))"
       | otherwise = fail $ "Unknown piecewise expression " ++ name
@@ -271,7 +271,7 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
       | name == "ln" = unaryOperator "log(" ")"
       | name == "exp" = unaryOperator "exp(" ")"
       | name `S.member` (S.fromList basicTrig) = unaryOperator (LBS.pack $ name ++ "(") ")"
-      | name `S.member` (S.fromList $ map (++"h") basicTrig) = (LBS.pack $ name ++ "h(") ")"
+      | name `S.member` (S.fromList $ map (++"h") basicTrig) = unaryOperator (LBS.pack $ name ++ "h(") ")"
       | name `S.member` (S.fromList invTrig) =
         unaryOperator (LBS.pack $ "(1.0 / " ++ ((M.fromList $ zip invTrig basicTrig)!!name) ++ "(") "))"
       | name `S.member` (S.fromList $ map (++"h") invTrig) =
@@ -279,7 +279,7 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
       | name `S.member` (S.fromList $ map ("arc"++) basicTrig) =
         unaryOperator (LBS.pack $ "a" ++ name ++ "(") ")"
       | name `S.member` (S.fromList $ map (\x -> "arc" ++ x ++ "h") basicTrig) =
-        (LBS.pack $ "arc" ++ name ++ "h(") ")"
+        unaryOperator (LBS.pack $ "arc" ++ name ++ "h(") ")"
       | name `S.member` (S.fromList $ map ("arc"++) invTrig) =
         unaryOperator (LBS.pack $ "a" ++ ((M.fromList $ zip invTrig basicTrig)!!name) ++ "(1.0 / (") "))"
       | name `S.member` (S.fromList $ map (\x -> "arc" ++ x ++"h") invTrig) =
@@ -297,7 +297,7 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
     extractPiecewiseOtherwise (Apply op [arg])
       | opIs "piece1" "otherwise" op = Just arg
       | otherwise = Nothing
-    unaryOperator a b 
+    unaryOperator a b
       | [operand] <- operands = do
         cgAppend a
         putExpression ep vmap ctx (stripSemCom operand)
@@ -316,7 +316,7 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
         forM (zip [0..] operands) $ \(i, operand) -> do
           when (i /= 0) $ cgAppend b
           putExpression ep vmap ctx (stripSemCom operand)
-        cgAppend c        
+        cgAppend c
 
 putExpression _ _ _ (Apply _ _) = fail "Apply where operator is not csymbol or other recognised form"
 
@@ -324,9 +324,9 @@ putExpression _ _ _ (Bind _ _ _) = fail "Unexpected bind in expression"
   
 -- We don't handle e, gamma, pi from nums1 since the simplifier has already
 -- converted them to numerical constants.
-putExpression _ _ _ (Csymbol cd name) 
-  | Just "logic1" <- cd, name == "true" = "1"
-  | Just "logic1" <- cd, name == "false" = "0"
+putExpression _ _ _ (Csymbol cd name)
+  | Just "logic1" <- cd, name == "true" = cgAppend "1"
+  | Just "logic1" <- cd, name == "false" = cgAppend "0"
   | otherwise =
   fail $ "Encountered csymbol with content dictionary" ++ (show cd) ++
          " and name " ++ name ++ "."
@@ -336,7 +336,7 @@ putExpression _ _ _ (Cs str) =
 
 putExpression ep vmap ctx (Error{}) = fail "Unexpected MathML <error> element"
 
-putExpression _ _ _ (Cs str) =
+putExpression _ _ _ (CBytes str) =
   fail $ "Unexpected MathML cbytes element with contents " ++ str
 
 putExpression _ _ _ _ = fail "Unhandled MathML expression"
@@ -355,13 +355,13 @@ assignIndicesToVariables setup m constVars varVars =
     constVarsExcludingIVs = S.map (\(a,b,_) -> (a,b)) $
                             S.filter (\(_, _, isConst) -> not isConst) constVars
     nConsts = S.size constVarsExcludingIVs
-    otherVars = M.fromList $ (daeBoundVariable setup, (Nothing, Just 0)):
-                             (zip constVarsExcludingIVs [(Just i, Nothing) | i <- [1..nConsts]])
+    otherVars = M.fromList $ ((daeBoundVariable setup, 0), (Nothing, Just 0)):
+                             (zip (S.toList constVarsExcludingIVs) [(Just i, Nothing) | i <- [1..nConsts]])
     varsPair = S.map (\(a, b, _) -> (a, b)) varVars
     nVars = S.size varsPair
-    varsRates = M.fromList $ (zip [(Nothing, Just i) | i <- [(nConsts + 1)..(nConsts + nVars)]] varsPair) ++
-                             (zip [(nConsts + nVars + 1)..(nConsts + nVars * 2)]
-                              (S.map (\(a, b) -> (a, b + 1)) varsPair))
+    varsRates = M.fromList $ (zip (S.toList varsPair) [(Nothing, Just i) | i <- [(nConsts + 1)..(nConsts + nVars)]]) ++
+                             (zip (S.toList $ S.map (\(a, b) -> (a, b + 1)) varsPair)
+                                  [(Nothing, Just i) | i <- [(nConsts + nVars + 1)..(nConsts + nVars * 2)]])
   in
    VariableMap { vmapMap = M.unionWith (\(a1, b1) (a2, b2) -> (a1 `mplus` a2, b2 `mplus` b1)) otherVars varsRates,
                  vmapNConsts = nConsts, vmapNVars = nVars }
@@ -461,7 +461,7 @@ putModelSolveConsts vmap model@(SimplifiedModel { assertions = assertions }) p
   -- Check the inequalities hold. XXX should split them up and use them as solver
   -- constraints as soon as all variables in them are known instead.
   mapM_ (checkInequality ConstantEvaluation vmap) ieqConst
-  putByteString "return 0;"
+  cgAppend "return 0;"
 
 -- | Solve a system of one or more equations.
 -- | We have two cases: Solve by assignment of the variable on one side to the
@@ -505,9 +505,9 @@ solveSystem ep vmap known eqns = do
     cgAppend "(void* allState, double* params, double* residuals)\n{\n"
     cgAppend "UNBUNDLE_ARRAYS\n"
     copyParams
-    forM_ (zip [0..] eqns) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), ctx)) -> do
+    forM_ (zip [0..] eqns) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), AssertionContext ctx)) -> do
       cgAppend "residuals["
-      cgAppend (show i)
+      cgAppend . LBS.pack . show $ i
       cgAppend "] = "
       putExpression ep vmap ctx (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b])
       cgAppend ";\n"
@@ -522,22 +522,22 @@ solveSystem ep vmap known eqns = do
   cgAppend "free(params);\n"
   return (allVars `S.union` known)
 
-checkInequality ep vmap (Assertion (ieq, ctx)) = do
+checkInequality ep vmap (Assertion (ieq, AssertionContext ctx)) = do
   cgAppend "if (!("
   putExpression ep vmap ctx (stripSemCom ieq)
   cgAppend ")) return 1;\n"
 
 putModelResiduals vmap model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
-  forM_ (zip [0..] eqnVary) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), ctx)) ->
+  forM_ (zip [0..] eqnVary) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), AssertionContext ctx)) -> do
     cgAppend "residuals["
     cgAppend . LBS.pack . show $ i
     cgAppend "] = "
     putExpression TimeVaryingEvaluation vmap ctx (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b])
     cgAppend ";\n"
   cgAppend "return (("
-  forM_ (zip [0..] ieqVary) $ \(i, Assertion (ieq, ctx)) -> do
+  forM_ (zip [0..] ieqVary) $ \(i, Assertion (ieq, AssertionContext ctx)) -> do
     when (i /= 0) (cgAppend ") && (")
-    putExpression TimeVaryingEvaluation vmap ctx ieq
+    putExpression TimeVaryingEvaluation vmap ctx (stripSemCom ieq)
   cgAppend ")) ? 0 : 1;\n"
 
 -- | A getter for parsing the output from the simulator.
@@ -584,27 +584,28 @@ classifyVariablesAndAssertions :: DAEIntegrationSetup -> SimplifiedModel -> Mode
 classifyVariablesAndAssertions (DAEIntegrationSetup {}) (SimplifiedModel { assertions = assertions }) =
   let
     (equations, inequalities) = partition isAssertionEquation assertions
-    usageList = map findAssertionVariableUsage equations
-    allVars = S.toList $ S.unions usageList
-    nVars = length allVars
+    usageList = map (S.fromList . findAssertionVariableUsage) equations
+    allVars = S.unions usageList
+    allVarsL = S.toList allVars
+    nVars = S.size allVars
     nEqns = length equations
     eqnStructure :: U.UArray (Equation, Variable) Bool
     eqnStructure = U.array ((0,0), (nEqns - 1, nVars - 1))
-                           (concatMap (\(eqn, s) -> [((eqn, varID), S.member var s) | (var, varID) <- zip allVars [0..]])
+                           (concatMap (\(eqn, s) -> [((eqn, varID), S.member var s) | (var, varID) <- zip allVarsL [0..]])
                                       (zip [0..] usageList))
     allEqnNos = (S.fromList [0..(nEqns - 1)])
     (constEqns, constVars) = 
-      smallestDecompose eqnStructure allEqnNos (S.fromList [0..(nVars - 1)])
-    varMap = M.fromList (zip [0..] allVars)
+      foldl' (\(l1, l2) (a, b) -> (a:l1, b:l2)) ([], []) $
+        smallestDecompose eqnStructure allEqnNos (S.fromList [0..(nVars - 1)])
+    varMap = M.fromList (zip [0..] allVarsL)
     eqnMap = M.fromList (zip [0..] equations)
-    constVarSet = S.fromList . map (varMap!) . concat . map snd $ constVars
+    constVarSet = S.fromList . map (varMap!!) . concat $ constVars
     varSet = allVars `S.difference` constVarSet
-    varEqns = map (eqnMap!) . S.toList $ allEqnNos `S.difference` (S.unions $ map S.fromList constEqns)
-    constEqns' = map (map (eqnMap!)) constEqns
+    varEqns = map (eqnMap!!) . S.toList $ allEqnNos `S.difference` (S.unions $ map S.fromList constEqns)
+    constEqns' = map (map (eqnMap!!)) constEqns
     partitionByUsage =
-      (\(a, b) -> ((map snd a), (map snd b))) .
-      partition (\(_, (var, isIV)) -> isIV || S.member var constVarSet)
-    (ieqConst, ieqVary) = partitionByUsage $ map findAssertionVariableUsage inequalities
+      partition (all (\var@(_, _, isIV) -> isIV || S.member var constVarSet) . findAssertionVariableUsage)
+    (ieqConst, ieqVary) = partitionByUsage inequalities
   in
    (constVarSet, varSet, constEqns', varEqns, ieqConst, ieqVary)
 
@@ -616,44 +617,44 @@ isAssertionEquation _ = False
 -- | initial value or not, and their degree.
 findAssertionVariableUsage :: Assertion -> [(VariableID, Int, Bool)]
 findAssertionVariableUsage (Assertion (ex, AssertionContext vmap)) =
-  catMaybes $ applyIgnoringSemCom findExpressionVariableUsage ex (M.map (\(_, _, v) -> v) vmap)
+  findExpressionVariableUsage (M.map (\(_, _, v) -> v) vmap) (stripSemCom ex)
 
-findExpressionVariableUsage (ASTCi (Ci varName)) nameToVar
+findExpressionVariableUsage nameToVar (ASTCi (Ci varName))
   | Just varid <- M.lookup varName nameToVar = [(varid, 1, False)]
 
-findExpressionVariableUsage (Apply op [expr]) nameToVar
+findExpressionVariableUsage nameToVar (Apply op [expr])
   | opIs "calculus1" "diff" op,
     Just varName <- tryGetLambdaVariable (stripSemCom expr),
     Just varid <- M.lookup varName nameToVar = [(varid, 1, False)]
 
-findExpressionVariableUsage (Apply op [boundE, whenE, varE]) nameToVar
+findExpressionVariableUsage nameToVar (Apply op [boundE, whenE, varE])
   | opIs "cellml1" "evaluatedAt" op,
     -- XXX we really should check all whenE values are consistent, and that
     -- boundE is the bound variable the problem is over.
     Just whenc <- tryGetConstant whenE,
     ASTCi (Ci varName) <- stripSemCom varE,
-    Just varid <- M.lookup nameToVar varName = [(varid, 0, True)]
+    Just varid <- M.lookup varName nameToVar = [(varid, 0, True)]
 
-findExpressionVariableUsage (Apply op [boundE, whenE, WithMaybeSemantics _ (WithCommon _ (Apply op2 [expr]))]) nameToVar
+findExpressionVariableUsage nameToVar (Apply op [boundE, whenE, WithMaybeSemantics _ (WithCommon _ (Apply op2 [expr]))])
   | opIs "cellml1" "evaluatedAt" op,
     opIs "calculus1" "diff" op2,
     -- XXX we really should check all whenE values are consistent, and that
     -- boundE is the bound variable the problem is over.
     Just whenc <- tryGetConstant whenE,
     ASTCi (Ci varName) <- stripSemCom expr,
-    Just varid <- M.lookup nameToVar varName = [(varid, 1, True)]
+    Just varid <- M.lookup varName nameToVar = [(varid, 1, True)]
 
-findExpressionVariableUsage (Bind op bvars expression) nameToVar =
+findExpressionVariableUsage nameToVar (Bind op bvars expression) =
   let
     nameToVar' = foldl' (\nameToVar' (WithMaybeSemantics _ (WithCommon _ (Ci bvarName))) 
                               -> M.delete bvarName nameToVar') nameToVar bvars
   in
-   (applyIgnoringSemCom findExpressionVariableUsage op nameToVar) ++
-   (applyIgnoringSemCom findExpressionVariableUsage op nameToVar')
+   findExpressionVariableUsage nameToVar (stripSemCom op) ++
+   findExpressionVariableUsage nameToVar' (stripSemCom op)
 
-findExpressionVariableUsage (Apply op exprs) nameToVar =
-  applyIgnoringSemCom findExpressionVariableUsage op nameToVar ++
-  (concat $ mapIgnoringSemCom findExpressionVariableUsage exprs nameToVar)
+findExpressionVariableUsage nameToVar (Apply op exprs) =
+  findExpressionVariableUsage nameToVar (stripSemCom op) ++
+  (concat $ map (findExpressionVariableUsage nameToVar . stripSemCom) exprs)
 
 findExpressionVariableUsage _ _ = []
 
@@ -702,14 +703,14 @@ changeDerivativesToVariable origVar matchDegree newVar newVarU oneHigherAsDeriv
   let
     -- Find all variable names that correspond to origVar...
     nameSet = S.fromList . map fst . filter (\(_, (_, _, var)) -> var == origVar) . M.toList $ ctx
-    makeUnusedName i | S.member istr ctx = makeUnusedName (i + 1)
+    makeUnusedName i | M.member istr ctx = makeUnusedName (i + 1)
                      | otherwise = "var" ++ istr
       where istr = "var" ++ show i
     newName = makeUnusedName 0
-    ctx' = M.insert (newName, ("real", Just newVarU, newVar)) ctx
+    ctx' = M.insert newName ("real", newVarU, newVar) ctx
   in
    Assertion (WithMaybeSemantics s (WithCommon c
-                               (changeDerivativesToVariableEx nameSet matchDegree newName oneHigherAsDeriv ex)), ctx')
+                               (changeDerivativesToVariableEx nameSet matchDegree newName oneHigherAsDeriv ex)), AssertionContext ctx')
 
 changeDerivativesToVariableEx _ _ _ _ c@(Cn _) = c
 changeDerivativesToVariableEx _ _ _ _ c@(ASTCi _) = c
@@ -720,9 +721,10 @@ changeDerivativesToVariableEx _ _ _ _ cb@(CBytes _) = cb
 changeDerivativesToVariableEx nameSet matchDegree newName oneHigherAsDeriv (Apply op [dege, expre])
   | opIs "calculus1" "nthdiff" op,
     Just deg <- tryGetConstant dege,
-    deg == matchDegree || (oneHigherAsDeriv && deg == matchDegree + 1),
+    degi <- round deg,
+    degi == matchDegree || (oneHigherAsDeriv && (degi == matchDegree + 1)),
     isLambdaVariableNamedInSet nameSet (stripSemCom expre) =
-      if deg == matchDegree then
+      if degi == matchDegree then
         ASTCi (Ci newName)
       else
         Apply (noSemCom $ Csymbol (Just "calculus1") "diff") [noSemCom $ ASTCi (Ci newName)]
@@ -764,7 +766,7 @@ tryGetVariableRef (Apply op [boundE, whenE, varE])
   | opIs "cellml1" "evaluatedAt" op,
     Just whenc <- tryGetConstant whenE,
     ASTCi (Ci varName) <- stripSemCom varE = Just (varName, 0, True)
-tryGetVariableRef (Apply op [boundE, whenE, WithMaybeSemantics _ (WithCommon _ (Apply op2 [expr]))]) nameToVar
+tryGetVariableRef (Apply op [boundE, whenE, WithMaybeSemantics _ (WithCommon _ (Apply op2 [expr]))])
   | opIs "cellml1" "evaluatedAt" op,
     opIs "calculus1" "diff" op2,
     -- XXX we really should check all whenE values are consistent, and that
@@ -780,7 +782,7 @@ tryGetConstant _ = Nothing
 stripSemCom (WithMaybeSemantics _ (WithCommon _ x)) = x
              
 applyIgnoringSemCom :: (a -> b) -> WithMaybeSemantics (WithCommon a) -> WithMaybeSemantics (WithCommon b)
-applyIgnoringSemCom f (WithMaybeSemantics s (WithCommon c a)) = f a
+applyIgnoringSemCom f (WithMaybeSemantics s (WithCommon c a)) = WithMaybeSemantics s (WithCommon c (f a))
 mapIgnoringSemCom f = map (applyIgnoringSemCom f)
 
 -- | Zip the first list with items from one of the two following lists, depending on a predicate. True
