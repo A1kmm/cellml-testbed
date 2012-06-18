@@ -44,7 +44,8 @@ instance ModelLoader LoadModels where
             modelText <- liftM snd $ withCurlDo (curlGetString au curlOpts)
             Control.Monad.when (null modelText) $ fail ("Could not retrieve CellML model from " ++ au)
             let l = runLA (xread >>> parseCellML) modelText
-            Control.Monad.when (null l) $ fail ("XML-level failure to parse model from " ++ u)
+            Control.Monad.when (null l) $ fail ("XML-level failure to parse model from " ++ 
+                                                au)
             let mmodel = liftM (indexModel au) $ head l
             case mmodel of
               Left _ -> return mmodel
