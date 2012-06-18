@@ -21,9 +21,13 @@ Library
                      Data.CellML12.Parser,
                      Data.CellML12.Structure,
                      Data.CellML12.SimplifiedModel,
+                     Data.CellML12.IndexedModel,
+                     Data.CellML12.DisjointSet,
+                     Data.CellML12.SystemDecomposer,
                      Data.CellML12.ToSimplifiedModel,
                      Data.CellML12.ModelLoader,
                      Data.CellML12.ModelSolver
+    Other-Modules:   Data.CellML12.SupportCode
     Build-Depends: hxt >= 9 && <10,
                    base >= 3 && < 5,
                    arrowapply-utils == 0.2,
