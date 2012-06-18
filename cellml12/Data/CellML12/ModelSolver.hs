@@ -152,8 +152,8 @@ solveModelWithParameters p = do
     _ -> fail "Incomplete results - solver program may have crashed"
 
 -- | Runs a solver monad over a particular model with a particular setup.
-runSolverOnDAESimplifiedModel :: SimplifiedModel -> DAEIntegrationSetup -> SolverT (ErrorT String IO) a -> ErrorT String IO a
-runSolverOnDAESimplifiedModel m' setup solver =
+runSolverOnDAESimplifiedModel :: SimplifiedModel -> DAEIntegrationSetup -> SolverT (ErrorT String IO) a -> IO (Either String a)
+runSolverOnDAESimplifiedModel m' setup solver = runErrorT $
   -- TODO: Need to simplify & partially evaluate before fixing highers to ensure
   --       that all derivative degrees are computed.
   case fixHighers m' setup of
