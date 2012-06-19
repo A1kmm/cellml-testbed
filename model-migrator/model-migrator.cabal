@@ -1,0 +1,33 @@
+Name: model-migrator
+Version: 0.1
+Cabal-Version: >= 1.6
+Build-Type: Simple
+License: BSD3
+License-File: LICENSE
+Author: Andrew Miller
+Copyright: (C) 2012 The University of Auckland
+Maintainer: ak.miller@auckland.ac.nz
+Stability: experimental
+Synopsis: Convert CellML 1.0 and CellML 1.1 models into CellML 1.2 draft
+Description: An automated convertor from CellML 1.0 and CellML 1.1 models into Andrew's CellML 1.2 draft
+Category: Math
+Category: XML
+Source-Repository head
+    Type:         git
+    Location:     https://github.com/A1kmm/cellml-testbed
+
+Executable model-migrator
+        Main-Is: Main.hs
+        Build-Depends: hxt >= 9 && <10,
+                       base >= 3 && <5,
+                       arrowapply-utils == 0.2,
+                       cmathml3,
+                       monads-tf,
+                       transformers,
+                       containers,
+                       curl,
+                       bytestring,
+                       uniplate,
+                       parsec
+
+
