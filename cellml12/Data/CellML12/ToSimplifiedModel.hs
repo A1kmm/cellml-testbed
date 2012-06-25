@@ -25,9 +25,9 @@ type TypeTable = M.Map (ModelPath, String) String
 type UnitsTable = M.Map (ModelPath, String) CanonicalUnits
 
 -- | Load a model and simplify it into a list of mathematical equations.
-buildSimplifiedModel :: (Monad m, ModelLoader m) => String -> m (Either InvalidCellML SimplifiedModel)
-buildSimplifiedModel mpath = runErrorT $ do
-  model <- ErrorT (loadModel mpath "")
+buildSimplifiedModel :: (Monad m, ModelLoader m) => String -> m SimplifiedModel
+buildSimplifiedModel mpath = do
+  model <- loadModel mpath ""
   comps <- findRelevantComponents model
   let typeTable = buildTypeTable model comps
   unitsTable <- buildUnitsTable model comps
@@ -59,8 +59,8 @@ buildAssertions m comps unitsTable typeTable varMap =
 
 -- | Builds up information about what variables are connected to what other models.
 buildVariableInfo :: (Monad m, ModelLoader m) => IndexedModel -> [(IndexedComponent, ModelPath)] -> UnitsTable ->
-                     ErrorT InvalidCellML m (M.Map (ModelPath, String) VariableID,
-                                             M.Map VariableID [(ModelPath, Maybe CanonicalUnits)])
+                     m (M.Map (ModelPath, String) VariableID,
+                        M.Map VariableID [(ModelPath, Maybe CanonicalUnits)])
 buildVariableInfo m comps unitsTable = do
   let allVars = concatMap (\(c, p) -> map (\(n, _) -> (p, n))
                                           (M.toList (iComponentVariables c))
@@ -77,7 +77,7 @@ buildVariableInfo m comps unitsTable = do
   return (p2v, v2pu)
 
 findConnectionsUsing :: (Monad m, ModelLoader m) => IndexedModel -> S.Set ModelPath -> ModelPath ->
-                        ErrorT InvalidCellML m [((ModelPath, String), (ModelPath, String))]
+                        m [((ModelPath, String), (ModelPath, String))]
 findConnectionsUsing m paths p = do
   l1 <- liftM concat $ forM (map withoutCommon . modelConnections . withoutCommon . iModel $ m) $
     \(Connection comp1 comp2 mv) -> do
@@ -88,7 +88,7 @@ findConnectionsUsing m paths p = do
     let p' = replaceModelPathStop p (ModelPathImport n ModelPathStop)
     in
      if (S.member p' paths) then do
-       m' <- ErrorT $ loadModel (iModelBase m) h
+       m' <- loadModel (iModelBase m) h
        findConnectionsUsing m' paths p'
      else return []
   return $ l1 ++ l2
@@ -114,10 +114,10 @@ replaceComponentPathStop' r ComponentPathStop = r
 replaceComponentPathStop' _ v = v
 
 -- | Find a (possibly imported) model using an IndexedModel and a ModelPath.
-pathToModel :: (ModelLoader m, Monad m) => IndexedModel -> ModelPath -> ErrorT InvalidCellML m IndexedModel
+pathToModel :: (ModelLoader m, Monad m) => IndexedModel -> ModelPath -> m IndexedModel
 pathToModel m (ModelPathImport n p)
   | Just (Import { importHref = url }) <- M.lookup n (iModelImports m) =
-    (ErrorT (loadModel (iModelBase m) url)) >>= flip pathToModel p
+    (loadModel (iModelBase m) url) >>= flip pathToModel p
   | otherwise = fail $ "Path found to unknown import " ++ n
 pathToModel m _ = return m
 
@@ -131,7 +131,7 @@ stopAtModel (ModelPathImport s mp) = ModelPathImport s (stopAtModel mp)
 -- | Build a table that maps every unit used on every variable in the model to a
 -- | canonical form in terms of base units.
 buildUnitsTable :: (Monad m, ModelLoader m) =>
-                   IndexedModel -> [(IndexedComponent, ModelPath)] -> ErrorT InvalidCellML m UnitsTable
+                   IndexedModel -> [(IndexedComponent, ModelPath)] -> m UnitsTable
 buildUnitsTable m l = liftM (\(_, _, c) -> c) $ 
                         foldM (\s (icomp@IndexedComponent { iComponent = WithCommon _ (Component { componentVariables = vl }) }, path) ->
                                 foldM (addUnitsToTable m path icomp) s vl) (7, M.empty, M.empty) l
@@ -139,7 +139,7 @@ buildUnitsTable m l = liftM (\(_, _, c) -> c) $
 -- | Ensures that the units of a particular variable are in the units table.
 addUnitsToTable :: (ModelLoader m, Monad m) => IndexedModel -> ModelPath -> IndexedComponent ->
                    CanonicalUnitsState -> WithCommon Variable ->
-                   ErrorT InvalidCellML m CanonicalUnitsState
+                   m CanonicalUnitsState
 addUnitsToTable m compPath comp s (WithCommon _ (Variable { variableUnits = Just u })) =
   liftM fst $ resolveComponentUnits m compPath (stopAtModel compPath) comp s u
 addUnitsToTable _ _ _ s _ = return s -- No units on variable
@@ -160,13 +160,13 @@ describeComponentPath (ComponentPathUnits u) = "units " ++ u
 -- | Find units which are in model context, given an IndexedModel, a path to the
 -- | model, and the name of the units to find. Both local and imported units are
 -- | considered.
-findModelUnits :: (Monad m, ModelLoader m) => ModelPath -> IndexedModel -> String -> ErrorT InvalidCellML m (Units, String, String)
+findModelUnits :: (Monad m, ModelLoader m) => ModelPath -> IndexedModel -> String -> m (Units, String, String)
 findModelUnits modPath cmod u =
   case M.lookup u (iModelUnits cmod) of
     Nothing -> fail $ "Variable refers to units " ++ u ++ " but no such units found in " ++ (describeModelPath modPath)
     Just (Left units) -> return (units, u, iModelBase cmod)
     Just (Right (imp, impu)) -> do
-      imodel <- ErrorT (loadModel (iModelBase cmod) (importHref imp))
+      imodel <- loadModel (iModelBase cmod) (importHref imp)
       findModelUnits
         (replaceModelPathStop modPath (ModelPathImport (importName imp) ModelPathStop))
         imodel
@@ -222,7 +222,7 @@ builtinUnits = M.fromList $ [
 
 resolveComponentUnits :: (ModelLoader m, Monad m) => IndexedModel -> ModelPath -> ModelPath -> IndexedComponent ->
                          CanonicalUnitsState -> String ->
-                         ErrorT InvalidCellML m (CanonicalUnitsState, CanonicalUnits)
+                         m (CanonicalUnitsState, CanonicalUnits)
 resolveComponentUnits m compPath modPath comp s@(nextbase, unitsByURL, unitsTable) u =
   case M.lookup (compPath, u) unitsTable of
     Just v -> return (s, v)
@@ -243,7 +243,7 @@ resolveComponentUnits m compPath modPath comp s@(nextbase, unitsByURL, unitsTabl
 
 resolveModelUnits :: (ModelLoader m, Monad m) => IndexedModel -> ModelPath -> ModelPath -> IndexedComponent ->
                      CanonicalUnitsState -> String ->
-                     ErrorT InvalidCellML m (CanonicalUnitsState, CanonicalUnits)
+                     m (CanonicalUnitsState, CanonicalUnits)
 resolveModelUnits m compPath modPath comp s@(nextbase, unitsByURL, unitsTable) u =
   case M.lookup (modPath, u) unitsTable `mplus` M.lookup u builtinUnits of
     Just v -> return $ ((nextbase, unitsByURL, M.insert (compPath, u) v unitsTable), v)
@@ -259,10 +259,10 @@ resolveModelUnits m compPath modPath comp s@(nextbase, unitsByURL, unitsTable) u
 canonicaliseUnits :: (ModelLoader m, Monad m) =>
                      (IndexedModel -> ModelPath -> ModelPath -> IndexedComponent ->
                       CanonicalUnitsState -> String ->
-                      ErrorT InvalidCellML m (CanonicalUnitsState, CanonicalUnits)) ->
+                      m (CanonicalUnitsState, CanonicalUnits)) ->
                      IndexedModel -> ModelPath -> ModelPath -> IndexedComponent ->
                      CanonicalUnitsState -> Units ->
-                     ErrorT InvalidCellML m (CanonicalUnitsState, CanonicalUnits)
+                     m (CanonicalUnitsState, CanonicalUnits)
 canonicaliseUnits _ _ _ _ _ s@(nextbase, unitsByURL, unitsTable) (Units { unitsBaseUnits = True }) =
   let
     newBase = BaseUnit nextbase
@@ -284,18 +284,18 @@ canonicaliseOneUnit lookupf m compPath modPath comp units
                                    cuBases = M.unionWith (+) b (M.map (*ue) nb)})
 
 findSpecificComponent :: (Monad m, ModelLoader m) => ModelPath -> IndexedModel -> String ->
-                         ErrorT InvalidCellML m ([(ModelPath, String)], IndexedComponent, ModelPath)
+                         m ([(ModelPath, String)], IndexedComponent, ModelPath)
 findSpecificComponent p m comp = do
   case M.lookup comp (iModelComponents m) of
     Nothing -> fail $ "Reference to component " ++ comp ++ " that doesn't exist."
     Just (Left c) -> return ([(p, comp)], c, replaceModelPathStop p (ModelPathComponent comp ComponentPathStop))
     Just (Right (imp, ic)) -> do
-      impMod <- ErrorT (loadModel (iModelBase m) (importHref imp))
+      impMod <- loadModel (iModelBase m) (importHref imp)
       (aliases, c, mp) <- findSpecificComponent (replaceModelPathStop p (ModelPathImport (importName imp) ModelPathStop)) impMod
                                                 (importComponentComponentRef ic)
       return ((p, comp):aliases, c, mp)
 
-findRelevantComponents :: (Monad m, ModelLoader m) => IndexedModel -> ErrorT InvalidCellML m [(IndexedComponent, ModelPath)]
+findRelevantComponents :: (Monad m, ModelLoader m) => IndexedModel -> m [(IndexedComponent, ModelPath)]
 findRelevantComponents m = do
   let toplevelComps = map (either (componentName . withoutCommon . iComponent) (importComponentName . snd))
                           (M.elems $ iModelComponents m)
@@ -304,7 +304,7 @@ findRelevantComponents m = do
   return $ map (\(_, a, b) -> (a, b)) $ newComps
 
 expandComponentsUsingEncapsulation :: (Monad m, ModelLoader m) => IndexedModel -> [([(ModelPath, String)], IndexedComponent, ModelPath)] ->
-                                      ErrorT InvalidCellML m [([(ModelPath, String)], IndexedComponent, ModelPath)]
+                                      m [([(ModelPath, String)], IndexedComponent, ModelPath)]
 expandComponentsUsingEncapsulation m c0 = do
   -- Build a list of unique models...
   let uniqueModPaths = foldl' (\s i -> S.insert i s) S.empty $ concatMap (\(l, _, _) -> map fst l) c0
