@@ -25,7 +25,7 @@ type TypeTable = M.Map (ModelPath, String) String
 type UnitsTable = M.Map (ModelPath, String) CanonicalUnits
 
 -- | Load a model and simplify it into a list of mathematical equations.
-buildSimplifiedModel :: (Monad m, ModelLoader m) => String -> m SimplifiedModel
+buildSimplifiedModel :: (MonadIO m, Monad m, ModelLoader m) => String -> m SimplifiedModel
 buildSimplifiedModel mpath = do
   model <- loadModel mpath ""
   comps <- findRelevantComponents model
@@ -48,10 +48,10 @@ buildAssertions m comps unitsTable typeTable varMap =
   flip concatMap comps $ \(icomp, cp) ->
     let
       comp = withoutCommon . iComponent $ icomp
-      variableToContextPart (WithCommon _ v) = (variableName v, (
-                                                   typeTable ! (cp, variableName v),
-                                                   M.lookup (cp, variableName v) unitsTable,
-                                                   varMap ! (cp, variableName v)))
+      variableToContextPart (WithCommon _ v) = 
+        (variableName v, (typeTable ! (cp, variableName v),
+                          M.lookup (cp, variableName v) unitsTable,
+                          varMap ! (cp, variableName v)))
       assertVarMap = M.fromList $ map variableToContextPart (componentVariables comp)
     in
      flip map (componentMaths comp) $ \math ->
@@ -70,9 +70,9 @@ buildVariableInfo m comps unitsTable = do
   let groupedComps = applyMerges allVars conns
       p2v = M.fromList $ concatMap (\(l, i) -> map (\v->(v, i)) l) $ (zip groupedComps (map VariableID [0..]))
       addOrNew v Nothing = [v]
-      addOrNew v (Just l)  = v:l
-      addPathAndUnitsForVariable m v@(c, _) =
-        M.alter (Just . (addOrNew (c, M.lookup v unitsTable))) (p2v ! v) m
+      addOrNew v (Just l) = v:l
+      addPathAndUnitsForVariable m v@(pToComp, n) =
+        M.alter (Just . (addOrNew (replaceComponentPathStop pToComp (ComponentPathVariable n), M.lookup v unitsTable))) (p2v ! v) m
       v2pu = foldl' addPathAndUnitsForVariable M.empty allVars
   return (p2v, v2pu)
 

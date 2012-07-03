@@ -33,10 +33,11 @@ cellmlNS = "http://www.cellml.org/cellml/1.2#"
 rdfNS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 cmetaNS = "http://www.cellml.org/metadata/1.0#"
 xlinkNS = "http://www.w3.org/1999/xlink"
+mathmlNS = "http://www.w3.org/1998/Math/MathML"
 
 cname lp = mkQName "cellml" lp cellmlNS
 
-celem lp = isElem >>> hasQName (cname lp)
+celem lp = isElem >>> hasLocalPart lp >>> hasNamespaceUri cellmlNS
 
 parseCellML :: ArrowXml a => a XmlTree (PCE (WithCommon Model))
 parseCellML = propagateNamespaces >>> celem "model" >>>
@@ -52,7 +53,7 @@ parseWithCommon f = liftAM2 WithCommon
                       (liftAM4 Common
                          ((liftA listToMaybe $ listA (getQAttrValue0 $ mkQName "cmeta" "id" cmetaNS)) >>^ return)
                          (listA (getChildren >>> isElem >>> hasQName (mkQName "rdf" "RDF" rdfNS)) >>^ return)
-                         ((listA $ getChildren >>> notInNamespace [cellmlNS, rdfNS, cmetaNS]) >>^ return)
+                         ((listA $ getChildren >>> notInNamespace [cellmlNS, mathmlNS, rdfNS, cmetaNS]) >>^ return)
                          (listA (getChildren >>> getAttrl >>> notInNamespace ["", cellmlNS, rdfNS, cmetaNS, xlinkNS]) >>^ return)
                       ) f
 

@@ -34,6 +34,7 @@ import Data.Serialize.IEEE754
 import Data.Generics
 import Prelude hiding ((!!))
 import Data.CellML12.SystemDecomposer
+import qualified Debug.Trace
 
 data DAEIntegrationSetup = DAEIntegrationSetup {
     daeModel :: SimplifiedModel,
@@ -131,6 +132,8 @@ solveModelWithParameters p = do
   
   -- Send the request for the problem to be solved...
   liftIO . BS.hPutStr hOut $ runPut $ do
+    -- Command...
+    putWord8 0
     -- Overrides...
     let pOverrides = mapMaybe (\(vardeg, newv) -> liftM (\v -> (v, newv)) $ M.lookup vardeg vmap) . daeParameterOverrides $ p
     flip putListOf pOverrides $ putTwoOf (putWord32host . fromIntegral . (\(a, b) -> fromJust $ a `mplus` b)) (putFloat64le)
@@ -161,7 +164,7 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $
     Right m -> do
       -- TODO: Simplify & partially evaluate model first.
       let mUnits = substituteUnits m
-      let c@(constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = classifyVariablesAndAssertions setup mUnits
+      c@(constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) <- classifyVariablesAndAssertions setup mUnits
       when (any (\(_, _, isIV) -> isIV) . S.toList $ varVars) $
         fail "Model contains initial values that can't be computed independently of time"
       let vmap = assignIndicesToVariables setup mUnits constVars varVars
@@ -169,9 +172,10 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $
       -- twice, because we need to simplify derivative degrees to get the units, but
       -- the units conversions might be able to be simplified out.
       code <- ErrorT (return (writeDAECode vmap mUnits setup c))
+      liftIO $ LBS.putStrLn code
       withSystemTempDirectory' "daesolveXXX" $ \fn -> do
         liftIO $ LBS.writeFile (fn </> "solve.c") code
-        ec <- liftIO $ system $ showString "gcc -O3 " . showString (fn </> "solve.c") . showString " -o " $ fn </> "solve"
+        ec <- liftIO $ system $ showString "gcc -ggdb -O0 -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lblas -llapack " . showString (fn </> "solve.c") . showString " -o " $ fn </> "solve"
         if ec /= ExitSuccess then fail "Cannot find C compiler" else do
         (Just i, Just o, _, p) <-
           liftIO $ createProcess $
@@ -184,6 +188,8 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $
           putMVar ecMvar ec'
         lStr <- liftIO $ LBS.hGetContents o
         ret <- evalStateT (runReaderT (unsolver solver) (i, vmap, setup)) lStr
+        liftIO $ BS.hPutStr o (BS.pack "\x01") -- Send exit command.
+        liftIO $ hFlush o
         ec' <- liftIO $ takeMVar ecMvar
         when (ec' /= ExitSuccess) $ fail "Problem executing integrator program"
         return ret
@@ -293,10 +299,10 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
       | otherwise = fail $ "Unknown rounding1 operator " ++ name
     extractPiecewisePiece (Apply op [arg1, arg2])
       | opIs "piece1" "piece" op = Just (stripSemCom arg1, stripSemCom arg2)
-      | otherwise = Nothing
+    extractPiecewisePiece _ = Nothing
     extractPiecewiseOtherwise (Apply op [arg])
       | opIs "piece1" "otherwise" op = Just arg
-      | otherwise = Nothing
+    extractPiecewiseOtherwise _ = Nothing
     unaryOperator a b
       | [operand] <- operands = do
         cgAppend a
@@ -318,7 +324,7 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
           putExpression ep vmap ctx (stripSemCom operand)
         cgAppend c
 
-putExpression _ _ _ (Apply _ _) = fail "Apply where operator is not csymbol or other recognised form"
+putExpression _ _ _ (Apply op _) = fail $ "Apply where operator is not csymbol or other recognised form but is " ++ show op
 
 putExpression _ _ _ (Bind _ _ _) = fail "Unexpected bind in expression"
   
@@ -339,7 +345,12 @@ putExpression ep vmap ctx (Error{}) = fail "Unexpected MathML <error> element"
 putExpression _ _ _ (CBytes str) =
   fail $ "Unexpected MathML cbytes element with contents " ++ str
 
-putExpression _ _ _ _ = fail "Unhandled MathML expression"
+putExpression _ _ _ (Cn (CnInteger i)) = cgAppend . LBS.pack $ show i
+putExpression _ _ _ (Cn (CnReal r)) = cgAppend . LBS.pack $ show r
+putExpression _ _ _ (Cn (CnDouble r)) = cgAppend . LBS.pack $ show r
+putExpression _ _ _ (Cn (CnHexDouble r)) = cgAppend . LBS.pack $ show r
+
+putExpression _ _ _ ex = fail ("Unhandled MathML expression " ++ show ex)
 
 -- | Assign a variable to each index in the model. Note that in the case where
 -- | a derivative is constant, it actually gets two indices, one as a constant,
@@ -355,9 +366,12 @@ assignIndicesToVariables setup m constVars varVars =
     constVarsExcludingIVs = S.map (\(a,b,_) -> (a,b)) $
                             S.filter (\(_, _, isConst) -> not isConst) constVars
     nConsts = S.size constVarsExcludingIVs
-    otherVars = M.fromList $ ((daeBoundVariable setup, 0), (Nothing, Just 0)):
-                             (zip (S.toList constVarsExcludingIVs) [(Just i, Nothing) | i <- [1..nConsts]])
-    varsPair = S.map (\(a, b, _) -> (a, b)) varVars
+    otherVars = M.fromList $ (((daeBoundVariable setup, 0), (Nothing, Just 0)):
+                              (zip (S.toList constVarsExcludingIVs) [(Just i, Nothing) | i <- [1..nConsts]]))
+    varsPair' = (S.map (\(a, b, _) -> (a, b)) varVars)
+    -- Every state corresponding to a rate becomes a variable...
+    varsPair = (S.map (\(a, b) -> (a, b - 1)) . S.filter (\(_, b) -> b > 0) $ varsPair' `S.union` constVarsExcludingIVs)
+               `S.union` varsPair'
     nVars = S.size varsPair
     varsRates = M.fromList $ (zip (S.toList varsPair) [(Nothing, Just i) | i <- [(nConsts + 1)..(nConsts + nVars)]]) ++
                              (zip (S.toList $ S.map (\(a, b) -> (a, b + 1)) varsPair)
@@ -436,6 +450,9 @@ substituteUnits sm@(SimplifiedModel { variableInfo = variableInfo, assertions = 
 writeDAECode :: VariableMap -> SimplifiedModel -> DAEIntegrationSetup -> ModelClassification -> Either String LBS.ByteString
 writeDAECode vmap model problem classification =
   let
+    (nresidInit, residInitialisation) = dofsAffectingInitialResidual vmap classification
+    lenDefines = LBS.pack ((showString "#define NCONSTS " . shows (vmapNConsts vmap) . showString"\n#define NVARS " .
+                            shows (vmapNVars vmap) . showString "\n#define NRESIDINITVARS " . shows nresidInit) "\n")
     ret =
       flip runCodeGen ("", "", 0) $ do
         cgAppend daeInitialPrefix
@@ -446,13 +463,28 @@ writeDAECode vmap model problem classification =
         putModelResiduals vmap model problem classification
         cgAppend daeResidualSuffix
         
+        cgAppend paramToStatePrefix
+        cgAppend residInitialisation
+        cgAppend paramToStateSuffix
+        
         -- To do: analytic Jacobian?
         -- To do: uncertain starting parameters.
   in
    case ret of
      Right (mainCode, preFuncs, _, _) ->
-       Right $ daeBoilerplateCode `LBS.append` preFuncs `LBS.append` mainCode
+       Right $ lenDefines `LBS.append` daeBoilerplateCode `LBS.append` preFuncs `LBS.append` mainCode
      Left e -> Left e
+
+dofsAffectingInitialResidual vm@(VariableMap { vmapMap = m }) (constv, varying, _, _, _, _) =
+  let vDeg = 
+        foldl' (\m (v,deg,_) -> M.alter (\deg0 -> Just $ max (fromMaybe 0 deg0) deg) v m)
+          M.empty (S.toList $ S.filter (\(v,d,_) -> isJust . snd $ m!!(v,d)) $ constv `S.union` varying)
+  in
+   (M.size vDeg,
+    LBS.fromChunks $ map (\(i, vv) -> BS.pack $
+                                        (fromMaybe "" $ getVariableString TimeVaryingEvaluation vm vv) ++
+                                        " = params[" ++ show i ++ "];\n")
+                         (zip [0..] $ M.toList vDeg))
 
 putModelSolveConsts vmap model@(SimplifiedModel { assertions = assertions }) p
                     (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
@@ -461,7 +493,7 @@ putModelSolveConsts vmap model@(SimplifiedModel { assertions = assertions }) p
   -- Check the inequalities hold. XXX should split them up and use them as solver
   -- constraints as soon as all variables in them are known instead.
   mapM_ (checkInequality ConstantEvaluation vmap) ieqConst
-  cgAppend "return 0;"
+  cgAppend "return 0;\n"
 
 -- | Solve a system of one or more equations.
 -- | We have two cases: Solve by assignment of the variable on one side to the
@@ -513,13 +545,16 @@ solveSystem ep vmap known eqns = do
       cgAppend ";\n"
       cgAppend "return 0;\n"
     cgAppend "}\n"
-  cgAppend "params = DoSolve("
+  cgAppend "{"
+  cgAppend "struct ArrayBundle b = { CONSTANTS, STATES, RATES };"
+  cgAppend "params = DoSolve(&b, "
   cgAppend . LBS.pack . show $ S.size newVars
   cgAppend ", "
   cgAppend fnName
   cgAppend ");"
   copyParams
   cgAppend "free(params);\n"
+  cgAppend "}"
   return (allVars `S.union` known)
 
 checkInequality ep vmap (Assertion (ieq, AssertionContext ctx)) = do
@@ -527,18 +562,33 @@ checkInequality ep vmap (Assertion (ieq, AssertionContext ctx)) = do
   putExpression ep vmap ctx (stripSemCom ieq)
   cgAppend ")) return 1;\n"
 
-putModelResiduals vmap model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
+putModelResiduals vmap@(VariableMap { vmapMap = m }) model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
   forM_ (zip [0..] eqnVary) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), AssertionContext ctx)) -> do
     cgAppend "residuals["
     cgAppend . LBS.pack . show $ i
     cgAppend "] = "
     putExpression TimeVaryingEvaluation vmap ctx (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b])
     cgAppend ";\n"
-  cgAppend "return (("
-  forM_ (zip [0..] ieqVary) $ \(i, Assertion (ieq, AssertionContext ctx)) -> do
-    when (i /= 0) (cgAppend ") && (")
-    putExpression TimeVaryingEvaluation vmap ctx (stripSemCom ieq)
-  cgAppend ")) ? 0 : 1;\n"
+  let needsCopy x
+        | Just (Just _, Just _) <- mx = True
+        | otherwise = False
+        where mx = M.lookup x m
+  forM_ (zip [length eqnVary..] (filter (\((v, deg,iv)) -> not iv && needsCopy (v, deg)) . S.toList $ constVars `S.union` varVars)) $
+    \(i, (v, deg, _)) -> do
+      cgAppend "residuals["
+      cgAppend . LBS.pack . show $ i
+      cgAppend "] = ("      
+      cgAppend . LBS.pack . fromJust $ getVariableString TimeVaryingEvaluation vmap (v, deg)
+      cgAppend ") - ("
+      cgAppend . LBS.pack . fromJust $ getVariableString ConstantEvaluation vmap (v, deg)
+      cgAppend ")"
+  if null ieqVary then cgAppend "return 0;\n"
+    else do
+      cgAppend "return (("
+      forM_ (zip [0..] ieqVary) $ \(i, Assertion (ieq, AssertionContext ctx)) -> do
+        when (i /= 0) (cgAppend ") && (")
+        putExpression TimeVaryingEvaluation vmap ctx (stripSemCom ieq)
+      cgAppend ")) ? 0 : 1;\n"
 
 -- | A getter for parsing the output from the simulator.
 getOutput :: Int -> Get [NumericalEntry]
@@ -555,21 +605,6 @@ getOutput l = do
                                            [1..l])) >>=
          (\v -> getOutput l >>= \l -> return (v:l))
 
-eraseConstantVariables :: SimplifiedModel -> SimplifiedModel
-eraseConstantVariables m =
-  let
-    isConstant a@(Assertion (WithMaybeSemantics _ (WithCommon _ (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just "relation1") "eq")))
-                                                                 _)), _)) =
-      case assertionVariables a of
-        _:_:_ -> True
-        _ -> False
-    isConstant _ = False
-    newAssertions = filter (not . isConstant) (assertions m)
-    vset = S.fromList $ concatMap assertionVariables newAssertions
-    vi = M.filterWithKey (\k a -> not (k `S.member` vset)) (unvariableInfo $ variableInfo m)
-  in
-   SimplifiedModel { variableInfo = VariableInfo vi, assertions = newAssertions }
-
 -- TODO boolean variable handling.
 -- | Classify all assertions and model variables[*] into four categories:
 -- |   1. Equations that include no 'time' dependent variables (including i.v.s).
@@ -580,34 +615,45 @@ eraseConstantVariables m =
 -- |  * Model variables here include the derivative degree, and treat
 -- |    connected CellML variables as the same - not to be confused with
 -- |    CellML variables.
-classifyVariablesAndAssertions :: DAEIntegrationSetup -> SimplifiedModel -> ModelClassification
-classifyVariablesAndAssertions (DAEIntegrationSetup {}) (SimplifiedModel { assertions = assertions }) =
+classifyVariablesAndAssertions :: Monad m => DAEIntegrationSetup -> SimplifiedModel -> ErrorT String m ModelClassification
+classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (SimplifiedModel { assertions = assertions }) =
   let
     (equations, inequalities) = partition isAssertionEquation assertions
     usageList = map (S.fromList . findAssertionVariableUsage) equations
     allVars = S.unions usageList
-    allVarsL = S.toList allVars
-    nVars = S.size allVars
+    allVarsNoTime = S.delete (bv, 0, False) allVars
+    allVarsNoStates = S.filter (\(v, d, iv) -> iv || d > 0 ||
+                                               not ((v, d + 1, False) `S.member` allVarsNoTime)) allVarsNoTime
+    -- Note: for the purposes of the usage list, IVs and rates do not depend on
+    -- 'time', we are only looking for explicit time dependencies.
+    equationsNoTime = filter (\(_, vu) -> not $ (bv, 0, False) `S.member` vu) $
+                      zip equations usageList
+    allVarsNoStatesL = S.toList allVarsNoStates
     nEqns = length equations
+    nVarsNoTime = S.size allVarsNoTime
+    nVarsNoStates = S.size allVarsNoStates
+    nEqnsNoTime = length equationsNoTime
     eqnStructure :: U.UArray (Equation, Variable) Bool
-    eqnStructure = U.array ((0,0), (nEqns - 1, nVars - 1))
-                           (concatMap (\(eqn, s) -> [((eqn, varID), S.member var s) | (var, varID) <- zip allVarsL [0..]])
-                                      (zip [0..] usageList))
-    allEqnNos = (S.fromList [0..(nEqns - 1)])
+    eqnStructure = U.array ((0,0), (nEqnsNoTime - 1, nVarsNoStates - 1))
+                           (concatMap (\(eqn, (_, s)) -> [((eqn, varID), S.member var s) | (var, varID) <- zip allVarsNoStatesL [0..]])
+                                      (zip [0..] equationsNoTime))
+    allEqnNos = S.fromList [0..(nEqnsNoTime - 1)]
     (constEqns, constVars) = 
       foldl' (\(l1, l2) (a, b) -> (a:l1, b:l2)) ([], []) $
-        smallestDecompose eqnStructure allEqnNos (S.fromList [0..(nVars - 1)])
-    varMap = M.fromList (zip [0..] allVarsL)
-    eqnMap = M.fromList (zip [0..] equations)
+        smallestDecompose eqnStructure allEqnNos (S.fromList [0..(nVarsNoStates - 1)])
+    varMap = M.fromList (zip [0..] allVarsNoStatesL)
+    eqnMap = M.fromList (zip [0..] (map fst equationsNoTime))
     constVarSet = S.fromList . map (varMap!!) . concat $ constVars
-    varSet = allVars `S.difference` constVarSet
-    varEqns = map (eqnMap!!) . S.toList $ allEqnNos `S.difference` (S.unions $ map S.fromList constEqns)
+    varSet = allVarsNoTime `S.difference` constVarSet
     constEqns' = map (map (eqnMap!!)) constEqns
+    varEqns = S.toList (S.fromList equations `S.difference` (S.fromList . concat $ constEqns'))
     partitionByUsage =
       partition (all (\var@(_, _, isIV) -> isIV || S.member var constVarSet) . findAssertionVariableUsage)
     (ieqConst, ieqVary) = partitionByUsage inequalities
   in
-   (constVarSet, varSet, constEqns', varEqns, ieqConst, ieqVary)
+   if nEqns == nVarsNoTime then
+     return (constVarSet, varSet, reverse constEqns', varEqns, ieqConst, ieqVary)
+   else fail $ "Trying to solve a model with " ++ (show nEqns) ++ " equations but " ++ (show nVarsNoTime) ++ " unknowns."
 
 isAssertionEquation (Assertion (WithMaybeSemantics _ (WithCommon _
                       (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just "relation1") "eq"))) _)), _)) = True
@@ -620,7 +666,7 @@ findAssertionVariableUsage (Assertion (ex, AssertionContext vmap)) =
   findExpressionVariableUsage (M.map (\(_, _, v) -> v) vmap) (stripSemCom ex)
 
 findExpressionVariableUsage nameToVar (ASTCi (Ci varName))
-  | Just varid <- M.lookup varName nameToVar = [(varid, 1, False)]
+  | Just varid <- M.lookup varName nameToVar = [(varid, 0, False)]
 
 findExpressionVariableUsage nameToVar (Apply op [expr])
   | opIs "calculus1" "diff" op,
@@ -664,13 +710,12 @@ fixHighers :: SimplifiedModel -> DAEIntegrationSetup -> Either String Simplified
 fixHighers m p =
   let
     (_, cuBvar):_ = (unvariableInfo . variableInfo $ m) !! (daeBoundVariable p)
-    m' = eraseConstantVariables m
-    varDeg = findMaximalDiffVariableDegreeWRT m' (daeBoundVariable p)
+    varDeg = findMaximalDiffVariableDegreeWRT m (daeBoundVariable p)
     (_, allRates) = partition (\(v, d) -> d==0) $ M.toList varDeg
     (basicRates, higherRates) = partition (\(v, d) -> d==1) allRates
     origMaxVar = maximum (map (\(VariableID i) -> i) (M.keys (unvariableInfo . variableInfo $ m)))
     (higherMap, m'', _) =
-      flip (flip foldl' (M.empty, m', origMaxVar)) higherRates $
+      flip (flip foldl' (M.empty, m, origMaxVar)) higherRates $
       \(hMap, m'', vMax) (v, d) ->
         let (mp, cu):_ = (unvariableInfo $ variableInfo m'') !! v
         in
@@ -759,8 +804,9 @@ tryGetLambdaVariable (Bind op _ (WithMaybeSemantics _ (WithCommon _ (ASTCi (Ci n
 tryGetLambdaVariable _ = Nothing
 
 tryGetVariableRef (ASTCi (Ci name)) = Just (name, 0, False)
-tryGetVariableRef (Apply op [expr])
+tryGetVariableRef (Apply (WithMaybeSemantics _ (WithCommon _ (Apply op [expr]))) [bvex])
   | opIs "calculus1" "diff" op,
+    ASTCi (Ci bvName) <- stripSemCom bvex, -- We should check bvName is our overall bvar
     Just varName <- tryGetLambdaVariable (stripSemCom expr) = Just (varName, 1, False)
 tryGetVariableRef (Apply op [boundE, whenE, varE])
   | opIs "cellml1" "evaluatedAt" op,
@@ -1158,8 +1204,14 @@ basedDigit c
   | c >= 'A' && c <= 'Z' = return (ord c - ord 'A' + 10)
   | otherwise = fail $ "Invalid 'digit' " ++ c:(" in based digit string")
 
-daeBoilerplateCode = "DAE boilerplate goes here"
-daeInitialPrefix = "int daeInitialSignature() {"
-daeInitialSuffix = "}"
-daeResidualPrefix = "int daeSignature() {"
-daeResidualSuffix = "}"
+daeBoilerplateCode =
+  "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES);\n\
+  \int computeResiduals(double t, double* CONSTANTS, double* STATES, double* RATES);\n\
+  \int paramsToState(double* params, double* STATES, double* RATES);\n\
+  \#include \"cellml12-solver-protocol.h\"\n"
+daeInitialPrefix = "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES)\n{\n"
+daeInitialSuffix = "}\n"
+daeResidualPrefix = "int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* residuals)\n{\n"
+daeResidualSuffix = "}\n"
+paramToStatePrefix = "int paramsToState(double* params, double* STATES, double* RATES)\n{\n"
+paramToStateSuffix = "}\n"

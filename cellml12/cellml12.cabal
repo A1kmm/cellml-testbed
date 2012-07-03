@@ -17,6 +17,7 @@ Source-Repository head
     Location: https://github.com/A1kmm/cellml-testbed/
 
 Library
+    Ghc-Prof-Options: -fprof-auto -fprof-cafs
     Exposed-Modules: 
                      Data.CellML12.Parser,
                      Data.CellML12.Structure,

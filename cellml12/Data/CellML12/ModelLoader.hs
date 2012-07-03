@@ -24,9 +24,9 @@ class ModelLoader m where
 
 data LoadModelsState = LoadModelsState { refCurlOptions :: IORef [CurlOption],
                                          refLoadedModels :: IORef (M.Map String IndexedModel) }
-initialLoadModelsState = 
+initialLoadModelsState =
   liftM2 LoadModelsState (newIORef []) (newIORef M.empty)
-  
+
 data LoadModels a = LoadModels { unLoadModels :: (LoadModelsState -> ErrorT InvalidCellML IO a) }
 
 instance Monad LoadModels where

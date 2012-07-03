@@ -1,3 +1,4 @@
+{-# LANGUAGE PatternGuards #-}
 module Data.CellML12.SystemDecomposer where
 import qualified Data.Set as S
 import Data.Array.Unboxed
@@ -5,7 +6,6 @@ import Data.Ord
 import Control.Monad
 import Data.Maybe
 import Data.List
-import Debug.Trace
 
 type Equation = Int
 type Variable = Int
@@ -13,13 +13,12 @@ type Variable = Int
 smallestDecompose :: UArray (Equation, Variable) Bool -> S.Set Equation -> S.Set Variable -> [([Equation], [Variable])]
 smallestDecompose involves eqns vars
   | eqns == S.empty = []
-  | otherwise =
-    let
-      e@(removedEqns, removedVars) = smallestDecomposeOne involves eqns vars
-    in
+  | Just e@(removedEqns, removedVars) <- smallestDecomposeOne involves eqns vars =
      e:(smallestDecompose involves (foldl' (flip S.delete) eqns removedEqns) (foldl' (flip S.delete) vars removedVars))
+  | otherwise = []
 
-smallestDecomposeOne involves eqns vars = head $ mapMaybe (tryDecomposeOne involves eqns vars S.empty S.empty) [(i, i) | i <- [1..]]
+smallestDecomposeOne involves eqns vars =
+  listToMaybe $ mapMaybe (tryDecomposeOne involves eqns vars S.empty S.empty) [(i, i) | i <- [1..(S.size eqns)]]
 
 tryDecomposeOne involves eqns vars removeEqns removeVars (_, 0)
   | S.size removeEqns == S.size removeVars = Just (S.toList removeEqns, S.toList removeVars)
@@ -37,4 +36,4 @@ tryDecomposeOne involves eqns vars removeEqns removeVars (fullTarget, target) =
     msum $ flip map rankedCandidates $ \(eqn, removeVars') -> do
       -- Once we have too many variables, adding more equations will never reduce the number.
       when (S.size removeVars' > fullTarget) (fail "")
-      tryDecomposeOne involves eqns vars (S.insert eqn removeEqns) removeVars' (fullTarget, target - 1)
+      tryDecomposeOne involves (S.delete eqn eqns) (vars `S.difference` removeVars') (S.insert eqn removeEqns) removeVars' (fullTarget, target - 1)
