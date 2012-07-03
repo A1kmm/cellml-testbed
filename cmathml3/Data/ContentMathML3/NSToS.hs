@@ -17,7 +17,7 @@ import Text.XML.HXT.Core
 import qualified Text.XML.HXT.DOM.XmlNode as XN
 import qualified Text.XML.HXT.DOM.QualifiedName as XN
 
-import Data.Generics
+import Data.Generics.Uniplate.Data
 
 -- | Take a non-strict structure, and make a strict structure, possibly giving an error:
 nsToStrict :: NSASTC -> Either String ASTC
@@ -27,17 +27,17 @@ nsToStrict = strictNSToS . nsToStrictNS
 -- | strict features.
 nsToStrictNS :: NSASTC -> NSASTC
 nsToStrictNS inp = let
-  p1r = everywhere' pass1 inp
-  p2r = everywhere' pass2 p1r
-  p3r = everywhere' pass3 p2r
-  p4r = everywhere' pass4 p3r
-  p5r = everywhere' pass5 p4r
-  p6r = everywhere' pass6 p5r
-  p6br = everywhere' pass6b p5r
-  p7r = everywhere' pass7 p6br
-  p8r = everywhere' pass8 p7r
+  p1r = transformBi pass1 inp
+  p2r = transformBi pass2 p1r
+  p3r = transformBi pass3 p2r
+  p4r = transformBi pass4 p3r
+  p5r = transformBi pass5 p4r
+  p6r = transformBi pass6 p5r
+  p6br = transformBi pass6b p5r
+  p7r = transformBi pass7 p6br
+  p8r = transformBi pass8 p7r
   in
-   everywhere' pass9 p8r
+   transformBi pass9 p8r
   
 -- | Take a non-strict structure that only uses strict features, and convert to a
 -- | strict structure, giving an error if any non-strict features are found.
@@ -102,8 +102,8 @@ strictNSBvarToS bv@(NSBvar (WithMaybeSemantics s (WithNSCommon nsc nsci)) _) = d
   ci <- strictNSCiToS nsci
   return $ WithMaybeSemantics s (WithCommon c ci)
 
-pass1 :: forall a . Data a => a -> a
-pass1 = mkT normaliseNSBind
+pass1 :: NSAST -> NSAST
+pass1 = normaliseNSBind
 
 normaliseNSBind (NSBind op bvar qual operands)
   | not (null bvar) || not (null qual) || length (take 2 operands) > 1 =
@@ -121,8 +121,8 @@ tryGetQualDegree l = do
   let NSQualDegree deg = qd
   return deg
 
-pass2 :: forall a . Data a => a -> a  
-pass2 = mkT exprPass2
+pass2 :: NSAST -> NSAST
+pass2 = exprPass2
 exprPass2 (NSApply (WithMaybeSemantics s (WithNSCommon c NSDiff)) bv@[NSBvar (WithMaybeSemantics sx (WithNSCommon cx x)) Nothing] [] e@[expr]) =
   NSApply (noNSSemCom $
              NSApply (WithMaybeSemantics s $ WithNSCommon c $ simpleCsymbol "calculus1" "diff") [] []
@@ -214,8 +214,8 @@ exprPass2 (NSApply (WithMaybeSemantics s (WithNSCommon c NSMoment))
 
 exprPass2 x = domainedRewrite x
 
-pass3 :: forall a . Data a => a -> a
-pass3 = mkT (exprPass3a . exprPass3)
+pass3 :: NSAST -> NSAST
+pass3 = exprPass3a . exprPass3
 
 exprPass3 :: forall a . CanHaveDomain a => a -> a
 exprPass3 a
@@ -269,8 +269,8 @@ exprPass3a (NSApply op bvs quals exl)
     singleDOA = noNSSemCom $ NSApply (noNSSemCom $ simpleCsymbol "set1" "intersect") [] [] doas
 exprPass3a x = x
 
-pass4 :: forall a . Data a => a -> a
-pass4 = (mkT exprPass4a) {- `extT` (mkT exprPass4b) -}
+pass4 :: NSAST -> NSAST
+pass4 = exprPass4a {- `extT` (mkT exprPass4b) -}
 
 domainQualifierToMaybeDOA (NSDomainOfApplication doa) = Just doa
 domainQualifierToMaybeDOA _ = Nothing
@@ -329,8 +329,8 @@ exprPass4b (NSInterval closure l h) =
     NSApply (noNSSemCom $ closureToOperator closure) [] [] [l, h]
 -}
 
-pass5 :: forall a . Data a => a -> a
-pass5 = mkT exprPass5
+pass5 :: NSAST -> NSAST
+pass5 = exprPass5
 
 statsOrMinMaxToSym NSMin = Just $ simpleCsymbol "minmax1" "min"
 statsOrMinMaxToSym NSMax = Just $ simpleCsymbol "minmax1" "max"
@@ -470,8 +470,8 @@ naryGeneralToSym NSUnion = Just $ simpleCsymbol "set1" "union"
 naryGeneralToSym NSIntersect = Just $ simpleCsymbol "set1" "intersect"
 naryGeneralToSym NSCartesianProduct = Just $ simpleCsymbol "set1" "cartesian_product"
 
-pass6 :: forall a . Data a => a -> a
-pass6 = mkT exprPass6
+pass6 :: NSAST -> NSAST
+pass6 = exprPass6
 exprPass6 (NSApply opc@(WithMaybeSemantics _ (WithNSCommon _ op)) bv quals exs)
   | Just doa <- mdoa, [] <- bv =
     (NSApply (noNSSemCom $ NSApply (noNSSemCom $ simpleCsymbol "fns1" "restriction") [] [] [opc, doa])
@@ -540,19 +540,19 @@ exprPass6MR (WithNSCommon c (NSMatrixRow bv quals (expr:_)))
   where
     mdoa = listToMaybe $ mapMaybe domainQualifierToMaybeDOA quals
 
-pass6b :: forall a . Data a => a -> a
-pass6b = mkT exprPass6b
+pass6b :: NSAST -> NSAST
+pass6b = exprPass6b
 exprPass6b (NSApply op bv@(_:_) quals args) =
   let
     doas = mapMaybe qualifierToMaybeDOA quals
     lambdaArgs = flip map args $ \arg ->
-      noNSSemCom $ NSApply (noNSSemCom $ simpleCsymbol "fns1" "lambda") bv [] [arg]
+      noNSSemCom $ NSBind (noNSSemCom $ simpleCsymbol "fns1" "lambda") bv [] [arg]
   in
    NSApply op [] [] (doas ++ lambdaArgs)
 exprPass6b x = x
 
-pass7 :: forall a . Data a => a -> a
-pass7 = mkT exprPass7
+pass7 :: NSAST -> NSAST
+pass7 = exprPass7
 
 exprPass7 (NSCn base (NSCnENotation a b)) =
   NSApply (noNSSemCom $ simpleCsymbol "bigfloat1" "bigfloat") [] [] [
@@ -662,16 +662,16 @@ symbolTable =
    (NSSelector, ("linalg1", "matrix_selector")), (NSEmptySet, ("set1", "emptyset"))
   ]
 
-pass8 :: forall a . Data a => a -> a
-pass8 = mkT exprPass8
+pass8 :: NSAST -> NSAST
+pass8 = exprPass8
 exprPass8 x
   | Just (cd, n) <- msym = simpleCsymbol cd n
   | otherwise = x
   where
     msym = M.lookup x symbolMap
 
-pass9 :: forall a . Data a => a -> a
-pass9 = mkT exprPass9
+pass9 :: WithMaybeSemantics (WithNSCommon NSCi) -> WithMaybeSemantics (WithNSCommon NSCi)
+pass9 = exprPass9
 exprPass9 (WithMaybeSemantics s (WithNSCommon c (NSCi (Just t) v))) =
   WithMaybeSemantics
     (combineSemantics ( defaultSemantics {
@@ -682,6 +682,7 @@ exprPass9 (WithMaybeSemantics s (WithNSCommon c (NSCi (Just t) v))) =
                                  XN.mkAttr (XN.mkName "encoding") [XN.mkText "MathML-Content"]]
                                 [XN.mkElement (XN.mkNsName "ci" mathmlNS) [] [XN.mkText $ nameType t]]
                               ]}) s) $ WithNSCommon c $ NSCi Nothing v
+exprPass9 x = x
 
 nameType :: NSVariableType -> String
 nameType (NSStrictVariableType CiInteger) = "integer_type"

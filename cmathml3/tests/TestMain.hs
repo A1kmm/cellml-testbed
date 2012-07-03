@@ -8,7 +8,7 @@ import Data.ContentMathML3.NSToS
 import Data.Function.Selector
 
 main = forM ["test1.xml"] $ \fn -> do
-     v <- runX $ readDocument [] ("tests" </> fn) /> parseMathML
+     v <- runX $ readDocument [] ("tests" </> fn) >>> (propagateNamespaces /> parseMathML)
      case v of
        [Left (InvalidMathML err)] -> putStrLn $ "Parse error: " ++ err
        [Right m] -> 

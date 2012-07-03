@@ -22,6 +22,7 @@ Executable mathtest
     Build-Depends: base, Cabal >= 1.9.2, filepath
 
 Library
+    Ghc-Prof-Options: -fprof-auto -fprof-cafs
     Exposed-Modules: Data.ContentMathML3,
                      Data.ContentMathML3.Structure,
                      Data.ContentMathML3.Parser,
@@ -36,4 +37,4 @@ Library
                    containers,
                    url,
                    array,
-                   syb
+                   uniplate

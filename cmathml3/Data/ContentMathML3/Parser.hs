@@ -33,27 +33,27 @@ mname lp = mkQName "mml" lp mathmlNS
 allM :: Monad m => (a -> m Bool) -> [a] -> m Bool
 allM f l = liftM and $ mapM f l
 
-melem lp = isElem >>> hasQName (mname lp)
+melem lp = isElem >>> hasLocalPart lp >>> hasNamespaceUri mathmlNS
 
 melemExcluding :: ArrowXml a => [String] -> a XmlTree XmlTree
 melemExcluding lexcl =
   let
-    jlexcl = map (Just . mname) lexcl
+    jlexcl = map Just lexcl
     in
-     (arrL $ \v -> if ((XN.getName v) `elem` jlexcl) then [] else [v])
+     hasNamespaceUri mathmlNS >>> (arrL $ \v -> if ((XN.getLocalPart v) `elem` jlexcl) then [] else [v])
 
 parseMathML :: ArrowXml a => a XmlTree (PME NSASTC)
-parseMathML = propagateNamespaces >>> melem "math" /> parseMathMLExpression
+parseMathML = melem "math" /> (isElem >>> parseMathMLExpression)
 
 parseInt :: (Monad m, Integral a) => Int -> String -> String -> m a
 parseInt base n v =
-    either (fail $ n ++ " must be an integer in base " ++ (show base)) return $
-      parse (intParser (fromIntegral base)) "" v
+    either (\e -> fail $ n ++ " must be an integer in base " ++ (show base) ++ ": " ++ (show e)) return $
+      parse (intParser (fromIntegral base)) v v
 
 parseReal :: Monad m => Int -> String -> String -> m Double
 parseReal base n v =
-    either (fail $ n ++ " must be an real in base " ++ (show base)) return $
-      parse (realParser (fromIntegral base)) "" v
+    either (\e -> fail $ n ++ " must be a real in base " ++ (show base) ++ ": " ++ (show e)) return $
+      parse (realParser (fromIntegral base)) v v
 
 allDigits = ['0'..'9'] ++ ['A'..'Z'] ++ ['a'..'z']
 digitToNumber d | d >= '0' && d <= '9' = ord d - ord '0'
@@ -88,10 +88,10 @@ realParser base = do
       if vi >= 0 then return $ vi + vdec * invb else return $ vi - vdec * invb
    ) <|> (return vi)
 
-afterPointParser digits invb = do
+afterPointParser digits invb = (do
   c <- liftM (fromIntegral . digitToNumber) $ oneOf digits
   v <- afterPointParser digits invb
-  return $ c + v * invb
+  return $ c + v * invb) <|> (eof >> return 0)
 
 intBitPatternToDouble :: (Integral a, Fractional b) => a -> b
 intBitPatternToDouble bp =
@@ -173,7 +173,7 @@ parseCommon = monadicA $ \el -> do
                              commonStyle = style, commonHref = href }
 
 parseSepEl :: ArrowXml a => a XmlTree (PME (String, String))
-parseSepEl = listA getChildren >>> (monadicEA $ \ell ->
+parseSepEl = listA (getChildren >>> isElem) >>> (monadicEA $ \ell ->
   let (elh, elt) = break (not . XN.isText) ell
   in
    case elt of
@@ -251,7 +251,7 @@ parseNSSymbolContent = monadicEA $ \el -> do
     
 parseNSAST :: ArrowXml a => a XmlTree (PME NSAST)
 parseNSAST = 
-  (melem "cn" >>> (monadicEA $ \el -> do
+  ((melem "cn" >>> (monadicEA $ \el -> do
       baseStr <- (lift $ unmonadicA (maybeAttr "base") el)
       base <- (maybe (return Nothing) (liftM Just . (parseInt 10 "base attribute")) baseStr)
       let useBase = fromMaybe 10 base
@@ -269,42 +269,42 @@ parseNSAST =
   (melem "apply" >>> (monadicEA $ \app -> do
       hElem <- unmonadicEA (getNthElemA "apply - find operator" 0) app
       h <- unmonadicEA parseMathMLExpression hElem
-      tElems <- unmonadicEA (listAM $ getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression) app
+      tElems <- unmonadicEA (listAM $ getChildren >>> isElem >>> isntBvar >>> isntQualifier >>> parseMathMLExpression) app
       let t = drop 1 tElems
       bv <- unmonadicEA (listAM (getChildren >>> melem "bvar" >>> parseBvar)) app
       qual <- unmonadicEA (listAM (getChildren >>> isQualifier >>> parseQualifier)) app
       return $ NSApply h bv qual t
   )) <+>
   (melem "bind" >>> liftAM4 NSBind
-                       ((listA getChildren >>^ head) >>> parseMathMLExpression)
+                       ((listA (getChildren >>> isElem) >>^ head) >>> parseMathMLExpression)
                        (listAM (melem "bvar" >>> parseBvar))
                        (listAM (isQualifier >>> parseQualifier))
-                       (listAM ((listA getChildren >>^ tail) >>> unlistA >>>
+                       (listAM ((listA (getChildren >>> isElem) >>^ tail) >>> unlistA >>>
                                 parseMathMLExpression))) <+>
   (melem "cerror" >>> liftAM2 NSError
-                        ((listA getChildren >>^ head) >>> parseMathMLExpression)
-                        (listAM ((listA getChildren >>^ tail) >>> unlistA >>>
+                        ((listA (getChildren >>> isElem) >>^ head) >>> parseMathMLExpression)
+                        (listAM ((listA (getChildren >>> isElem) >>^ tail) >>> unlistA >>>
                                 parseMathMLExpression))) <+>
   (melem "cbytes" >>> alwaysSuccessA (liftA NSCBytes extractChildText)) <+>
   (melem "piecewise" >>>
      (liftAM NSPiecewise $
        liftAM2 (,)
-                    (listAM $ parseWithNSCommon $ melem "piece" >>>
+                    (listAM $ getChildren >>> (parseWithNSCommon $ melem "piece" >>>
                      liftAM2 (,) (monadicEA $ \el -> do
                                      p <- unmonadicEA (getNthElemA "piece" 0) el
                                      unmonadicEA parseMathMLExpression p)
                           (monadicEA $ \el -> do
                               p <- unmonadicEA (getNthElemA "piece" 1) el
-                              unmonadicEA parseMathMLExpression p))
+                              unmonadicEA parseMathMLExpression p)))
                     (defaultA (Right Nothing) (getChildren >>>
-                                               liftAM Just (parseWithNSCommon (melem "otherwise" />
+                                               liftAM Just (parseWithNSCommon (melem "otherwise" /> isElem >>>
                                                                                parseMathMLExpression)))))) <+>
   (melem "relation" >>>
-     liftAM2 NSRelation ((listA getChildren >>^ head) >>> parseMathMLExpression)
-                        (listAM ((listA getChildren >>^ tail) >>> unlistA >>> parseMathMLExpression))
+     liftAM2 NSRelation ((listA (getChildren >>> isElem) >>^ head) >>> parseMathMLExpression)
+                        (listAM ((listA (getChildren >>> isElem) >>^ tail) >>> unlistA >>> parseMathMLExpression))
   ) <+>
   (melem "function" >>>
-     liftAM NSFunction (listAM (getChildren >>> parseMathMLExpression) >>>
+     liftAM NSFunction (listAM (getChildren >>> isElem >>> parseMathMLExpression) >>>
                         monadicEA' (exactlyOneOrError "expression child of function"))) <+>
   (melem "declare" >>>
    (monadicEA $ \el -> do
@@ -319,20 +319,20 @@ parseNSAST =
          Just "infix" -> return $ Just NSDeclareInfix
          Just "function-model" -> return $ Just NSDeclareFunctionModel
          Just v -> fail $ "Invalid noccur attribute value " ++ v
-       ndecl <- unmonadicEA (listAM (getChildren >>> parseMathMLExpression)) el
+       ndecl <- unmonadicEA (listAM (getChildren >>> isElem >>> parseMathMLExpression)) el
        return $ NSDeclare typeA scopeA nargsA noccurA ndecl)) <+>
   (melem "lambda" >>>
    (monadicEA $ \el -> do
        bv <- unmonadicEA (listAM (getChildren >>> melem "bvar" >>> parseBvar)) el
-       children <- unmonadicEA (listAM (getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
+       children <- unmonadicEA (listAM (getChildren >>> isElem >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
        expr <- exactlyOneOrError "non-qualifier element on lambda" children
-       dom <- unmonadicEA (listAM (getChildren >>> parseDomainQualifier)) el
+       dom <- unmonadicEA (listAM (getChildren >>> isElem >>> parseDomainQualifier)) el
        return $ NSLambda bv dom expr
                           )) <+>
   (melem "vector" >>>
    (monadicEA $ \el -> do   
        bv <- unmonadicEA (listAM (getChildren >>> melem "bvar" >>> parseBvar)) el
-       children <- unmonadicEA (listAM (getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
+       children <- unmonadicEA (listAM (getChildren >>> isElem >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
        dom <- unmonadicEA (listAM (getChildren >>> parseDomainQualifier)) el
        return $ NSVector bv dom children
    )) <+>
@@ -345,7 +345,7 @@ parseNSAST =
      if rows == []
        then return $ NSMatrixByRow rows
        else do
-         children <- unmonadicEA (listAM (getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
+         children <- unmonadicEA (listAM (getChildren >>> isElem >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
          firstChild <- exactlyOneOrError "MathML expressions inside matrix" children
          return $ NSMatrixByFunction bv dom firstChild
    )) <+>
@@ -354,14 +354,14 @@ parseNSAST =
   (melem "list" >>>
    (monadicEA $ \el -> do   
        bv <- unmonadicEA (listAM (getChildren >>> melem "bvar" >>> parseBvar)) el
-       children <- unmonadicEA (listAM (getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
+       children <- unmonadicEA (listAM (getChildren >>> isElem >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
        dom <- unmonadicEA (listAM (getChildren >>> parseDomainQualifier)) el
        return $ NSList bv dom children
    )) <+>
   (melem "set" >>>
    (monadicEA $ \el -> do   
        bv <- unmonadicEA (listAM (getChildren >>> melem "bvar" >>> parseBvar)) el
-       children <- unmonadicEA (listAM (getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
+       children <- unmonadicEA (listAM (getChildren >>> isElem >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
        dom <- unmonadicEA (listAM (getChildren >>> parseDomainQualifier)) el
        return $ NSSet bv dom children
    )) <+>  
@@ -410,13 +410,13 @@ parseNSAST =
      ("exponentiale", NSExponentialE), ("imaginaryi", NSImaginaryi),
      ("notanumber", NSNotanumber), ("true", NSTrue), ("false", NSFalse),
      ("pi", NSPi), ("eulergamma", NSEulergamma), ("infinity", NSInfinity)
-    ])
+    ])) `orElse` (arr $ \el -> Left . InvalidMathML $ "Unknown MathML element " ++ maybe "unnamed" id (XN.getQualifiedName el))
   
 parseMatrixRow :: ArrowXml a => a XmlTree (PME NSMatrixRow)
 parseMatrixRow = monadicEA $ \el -> do
   bv <- unmonadicEA (listAM (getChildren >>> melem "bvar" >>> parseBvar)) el
   dom <- unmonadicEA (listAM (getChildren >>> parseDomainQualifier)) el
-  children <- unmonadicEA (listAM (getChildren >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
+  children <- unmonadicEA (listAM (getChildren >>> isElem >>> isntBvar >>> isntQualifier >>> parseMathMLExpression)) el
   return $ NSMatrixRow bv dom children
 
 alwaysSuccessA :: (Arrow a, Error e) => a b c -> a b (Either e c)
@@ -424,9 +424,10 @@ alwaysSuccessA a = a >>^ Right
 extractChildText :: ArrowXml a => a XmlTree String
 extractChildText = liftA concat $ listA $ getChildren >>> getText
 
-getNthElemA el n = listA getChildren >>^ (\l -> let v = drop n l in
-                                            if null v then Left (InvalidMathML (el ++ ": Expected at least " ++ show (n + 1) ++ " child elements"))
-                                                      else Right (head v))
+getNthElemA el n = listA (getChildren >>> isElem)
+                     >>^ (\l -> let v = drop n l in
+                           if null v then Left (InvalidMathML (el ++ ": Expected at least " ++ show (n + 1) ++ " child elements"))
+                             else Right (head v))
 
 listAM :: (ArrowList a, Monad m) => a b (m c) -> a b (m [c])
 listAM a = {-
@@ -462,14 +463,14 @@ isntBvar = melemExcluding ["bvar"]
 
 parseQualifier :: ArrowXml a => a XmlTree (PME NSQualifier)
 parseQualifier = liftAM NSQualDomain parseDomainQualifier <+>
-                 (melem "degree" /> liftAM NSQualDegree parseMathMLExpression) <+>
-                 (melem "momentabout" /> liftAM NSQualMomentabout parseMathMLExpression) <+>
-                 (melem "logbase" /> liftAM NSQualLogbase parseMathMLExpression)
+                 (melem "degree" /> isElem >>> liftAM NSQualDegree parseMathMLExpression) <+>
+                 (melem "momentabout" /> isElem >>> liftAM NSQualMomentabout parseMathMLExpression) <+>
+                 (melem "logbase" /> isElem >>> liftAM NSQualLogbase parseMathMLExpression)
 
 parseDomainQualifier :: ArrowXml a => a XmlTree (PME NSDomainQualifier)
 parseDomainQualifier =
-  ((melem "domainofapplication" /> liftAM NSDomainOfApplication parseMathMLExpression) <+>
-   (melem "condition" /> liftAM NSCondition parseMathMLExpression) <+>
+  ((melem "domainofapplication" /> isElem >>> liftAM NSDomainOfApplication parseMathMLExpression) <+>
+   (melem "condition" /> isElem >>> liftAM NSCondition parseMathMLExpression) <+>
    (melem "interval" >>> liftAM NSQInterval
     (parseWithNSCommon $ monadicEA $ \interval -> do
         closure <- lift $ unmonadicA (maybeAttr "closure") interval
@@ -477,10 +478,10 @@ parseDomainQualifier =
         uplim <- unmonadicEA (getNthElemA "interval" 1) interval >>= unmonadicEA parseMathMLExpression
         return $ NSInterval closure lowlim uplim
     )) <+>
-   (melem "lowlimit" /> liftAM NSLowlimit parseMathMLExpression) <+>
-   (melem "uplimit" /> liftAM NSUplimit parseMathMLExpression)
+   (melem "lowlimit" /> isElem >>> liftAM NSLowlimit parseMathMLExpression) <+>
+   (melem "uplimit" /> isElem >>> liftAM NSUplimit parseMathMLExpression)
   )
 parseBvar :: ArrowXml a => a XmlTree (PME NSBvar)
 parseBvar = melem "bvar" >>>
-            liftAM2 NSBvar (parseMaybeSemantics (parseWithNSCommon $ liftAM2 NSCi parseNSCiType parseNSSymbolContent))
-                           (liftAM listToMaybe $ listAM (getChildren >>> melem "degree" /> parseMathMLExpression))
+            liftAM2 NSBvar (getChildren >>> isElem >>> parseMaybeSemantics (parseWithNSCommon $ liftAM2 NSCi parseNSCiType parseNSSymbolContent))
+                           (liftAM listToMaybe $ listAM (getChildren >>> melem "degree" /> isElem >>> parseMathMLExpression))
