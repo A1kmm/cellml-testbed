@@ -179,11 +179,11 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $
         if ec /= ExitSuccess then fail "Cannot find C compiler" else do
         (Just i, Just o, _, p) <-
           liftIO $ createProcess $
-            CreateProcess { cmdspec = RawCommand (fn </> "solve") [], cwd = Nothing,
+            CreateProcess { cmdspec = RawCommand {- (fn </> "solve") [] -} "valgrind" [fn</>"solve"], cwd = Nothing,
                             env = Nothing, std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit,
                             close_fds = False, create_group = False }
         ecMvar <- liftIO newEmptyMVar
-        liftIO $ forkIO $ do
+        liftIO $ forkOS $ do
           ec' <- waitForProcess p
           putMVar ecMvar ec'
         lStr <- liftIO $ LBS.hGetContents o
@@ -372,7 +372,7 @@ assignIndicesToVariables setup m constVars varVars =
     -- Every state corresponding to a rate becomes a variable...
     varsPair = (S.map (\(a, b) -> (a, b - 1)) . S.filter (\(_, b) -> b > 0) $ varsPair' `S.union` constVarsExcludingIVs)
                `S.union` varsPair'
-    nVars = S.size varsPair
+    nVars = S.size varVars
     varsRates = M.fromList $ (zip (S.toList varsPair) [(Nothing, Just i) | i <- [(nConsts + 1)..(nConsts + nVars)]]) ++
                              (zip (S.toList $ S.map (\(a, b) -> (a, b + 1)) varsPair)
                                   [(Nothing, Just i) | i <- [(nConsts + nVars + 1)..(nConsts + nVars * 2)]])

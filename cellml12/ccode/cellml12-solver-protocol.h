@@ -48,6 +48,7 @@ void read_fully(size_t count, void* buf)
 void write_fully(size_t count, void* buf)
 {
   size_t w;
+  fprintf(stderr, "Trying to write %d bytes\n", count);
   while (count > 0)
   {
     w = write(0, buf, count);
@@ -72,7 +73,7 @@ void
 vprint_error(const char* aMsg, va_list aVal)
 {
   char buf[256];
-  vsnprintf(aMsg, 255, buf, aVal);
+  vsnprintf(buf, 255, aMsg, aVal);
   buf[255] = 0;
   write_error(buf);
 }
@@ -136,11 +137,27 @@ double* DoSolve(struct ArrayBundle* b, size_t n, int (*f)(void*,double*,double*)
   return paramArray;
 }
 
+int force = 0;
+
 int compute_residuals(double t, N_Vector yy, N_Vector yp, N_Vector r, void* user_data)
 {
+  int i;
   double* work = user_data, * states = NV_DATA_S(yy), * rates = NV_DATA_S(yp),
         * residuals = NV_DATA_S(r);
-  return solveResiduals(t, work + 1, states, rates, residuals);
+
+  for (i = 0; i < NVARS; i++)
+    force += states[i] == 1.23 ? 0 : 1;
+  for (i = 0; i < NVARS; i++)
+    force += rates[i] == 1.23 ? 0 : 1;;
+  for (i = 0; i < NCONSTS; i++)
+    force += work[i + 1] == 1.23 ? 0 : 1;;
+
+  int ret = solveResiduals(t, work + 1, states, rates, residuals);
+  
+  for (i = 0; i < NVARS; i++)
+    force += residuals[i] == 1.23 ? 0 : 1;;
+
+  return ret;
 }
 
 int consistent_solve_step(N_Vector params, N_Vector resids, void* udata)
@@ -148,7 +165,7 @@ int consistent_solve_step(N_Vector params, N_Vector resids, void* udata)
   int ret;
   double* work = udata;
   paramsToState(NV_DATA_S(params), work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS);
-  return solveResiduals(work[0], work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS);
+  return solveResiduals(work[0], work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS, NV_DATA_S(resids));
 }
 
 int ensure_consistent_at(double t, double* work)
@@ -169,12 +186,14 @@ int ensure_consistent_at(double t, double* work)
   KINSetErrHandlerFn(solver, err_report, NULL);
   KINSpgmr(solver, 0);
   
+  work[0] = t;
+
   ones = N_VNew_Serial(NRESIDINITVARS);
   N_VConst(1.0, ones);
   flag = KINSol(solver, params, KIN_LINESEARCH, ones, ones);
-  N_VDestroy(ones);
 
-  KINFree(solver);
+  KINFree(&solver);
+  N_VDestroy(ones);
   N_VDestroy(params);
 
   return flag;
@@ -182,6 +201,8 @@ int ensure_consistent_at(double t, double* work)
 
 int main(int argc, char** argv)
 {
+  sleep(5);
+
   double* work = malloc(sizeof(double) * NWORK);
 
   while (1)
@@ -211,11 +232,9 @@ int main(int argc, char** argv)
       work[overrides[i].overVar] = overrides[i].overVal;
 
     free(overrides);
-    if (!solret)
-    {
-      print_error("Failed to solve for initial values");
+    /* Error will have already been produced if this fails. */
+    if (solret)
       continue;
-    }
     
     idaProblem = IDACreate();
     IDASetErrHandlerFn(idaProblem, err_report, NULL);
@@ -255,7 +274,7 @@ int main(int argc, char** argv)
 
     N_VDestroy(yvec);
     N_VDestroy(ypvec);
-    IDAFree(idaProblem);
+    IDAFree(&idaProblem);
   }
 
   free(work);
