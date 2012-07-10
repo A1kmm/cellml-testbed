@@ -34,10 +34,12 @@ import Data.Serialize.IEEE754
 import Data.Generics
 import Prelude hiding ((!!))
 import Data.CellML12.SystemDecomposer
+import qualified Debug.Trace
 
 data DAEIntegrationSetup = DAEIntegrationSetup {
     daeModel :: SimplifiedModel,
-    daeBoundVariable :: VariableID
+    daeBoundVariable :: VariableID,
+    daeWithGenCode :: LBS.ByteString -> IO () -- const (return ()) to disable.
     }
 data DAEIntegrationProblem = DAEIntegrationProblem {
     daeParameterOverrides :: [((VariableID, Int), Double)],
@@ -155,22 +157,22 @@ solveModelWithParameters p = do
 
 -- | Runs a solver monad over a particular model with a particular setup.
 runSolverOnDAESimplifiedModel :: SimplifiedModel -> DAEIntegrationSetup -> SolverT (ErrorT String IO) a -> IO (Either String a)
-runSolverOnDAESimplifiedModel m' setup solver = runErrorT $
-  -- TODO: Need to simplify & partially evaluate before fixing highers to ensure
-  --       that all derivative degrees are computed.
-  case fixHighers m' setup of
+runSolverOnDAESimplifiedModel m' setup solver = runErrorT $ do
+  mSimp1 <- simplifyModel m'
+  case fixHighers mSimp1 setup of
     Left e -> fail e
-    Right m -> do
-      -- TODO: Simplify & partially evaluate model first.
-      let mUnits = substituteUnits m
-      c@(constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) <- classifyVariablesAndAssertions setup mUnits
+    Right mFull -> do
+      let mUnits = substituteUnits mFull
+      -- Simplify again after putting units conversions in. We need to do it
+      -- twice, because we need to simplify derivative degrees to get the units, but
+      -- the units conversions might be able to be simplified out.
+      mSimp2 <- simplifyModel mUnits
+      c@(constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) <- classifyVariablesAndAssertions setup mSimp2
       when (any (\(_, _, isIV) -> isIV) . S.toList $ varVars) $
         fail "Model contains initial values that can't be computed independently of time"
       let vmap = assignIndicesToVariables setup mUnits constVars varVars
-      -- TODO: Simplify again after putting units conversions in. We need to do it
-      -- twice, because we need to simplify derivative degrees to get the units, but
-      -- the units conversions might be able to be simplified out.
-      code <- ErrorT (return (writeDAECode vmap mUnits setup c))
+      code <- ErrorT (return (writeDAECode vmap mSimp2 setup c))
+      liftIO $ daeWithGenCode setup code
       withSystemTempDirectory' "daesolveXXX" $ \fn -> do
         liftIO $ LBS.writeFile (fn </> "solve.c") code
         ec <- liftIO $ system $ showString "gcc -ggdb -O0 -Wall " . showString (fn </> "solve.c") . showString " -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lblas -llapack " . showString " -o " $ fn </> "solve"
@@ -191,6 +193,13 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $
         ec' <- liftIO $ takeMVar ecMvar
         when (ec' /= ExitSuccess) $ fail "Problem executing integrator program"
         return ret
+
+extractPiecewisePiece (Apply op [arg1, arg2])
+  | opIs "piece1" "piece" op = Just (stripSemCom arg1, stripSemCom arg2)
+extractPiecewisePiece _ = Nothing
+extractPiecewiseOtherwise (Apply op [arg])
+  | opIs "piece1" "otherwise" op = Just arg
+extractPiecewiseOtherwise _ = Nothing
 
 -- | Convert a mathematical expression into a ByteString containing C code for
 -- | evaluating that expression.
@@ -295,12 +304,6 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
       | name == "trunc" = unaryOperator "trunc(" ")"
       | name == "round" = unaryOperator "round(" ")"
       | otherwise = fail $ "Unknown rounding1 operator " ++ name
-    extractPiecewisePiece (Apply op [arg1, arg2])
-      | opIs "piece1" "piece" op = Just (stripSemCom arg1, stripSemCom arg2)
-    extractPiecewisePiece _ = Nothing
-    extractPiecewiseOtherwise (Apply op [arg])
-      | opIs "piece1" "otherwise" op = Just arg
-    extractPiecewiseOtherwise _ = Nothing
     unaryOperator a b
       | [operand] <- operands = do
         cgAppend a
@@ -394,6 +397,12 @@ getVariableString ep vm@(VariableMap { vmapNConsts = nc, vmapNVars = nv }) v = d
       | x <= (nc + nv) -> return $ "STATES[" ++ (show (varIndex - 1 - nc) ++ "]")
       | otherwise -> return $ "RATES[" ++ (show (varIndex - 1 - nc - nv) ++ "]")
 
+conversionFactor convertFrom@(CanonicalUnits fromOffs fromMup _) convertTo@(CanonicalUnits toOffs toMup _) =
+  ((fromMup / toMup) * fromOffs - toOffs, fromMup / toMup)
+
+convertReal from to v = let (a,m) = conversionFactor from to in
+  v * m + a
+
 -- | Put all variables into consistent units
 substituteUnits :: SimplifiedModel -> SimplifiedModel
 substituteUnits sm@(SimplifiedModel { variableInfo = variableInfo, assertions = assertions }) =
@@ -416,8 +425,6 @@ substituteUnits sm@(SimplifiedModel { variableInfo = variableInfo, assertions = 
                             mapMaybe (\(n, (_, mcu, varid)) ->
                                        mcu >>= (\cu -> Just (n, conversionFactor cu (chosenUnitsForVar !! varid)))) .
                             M.toList $ newMap
-        conversionFactor convertFrom@(CanonicalUnits fromOffs fromMup _) convertTo@(CanonicalUnits toOffs toMup _) =
-          ((toMup / fromMup) * toOffs - fromOffs, toMup / fromMup)
         considerApply cd op ignoreVal actualVal expr
           | abs (actualVal - ignoreVal) < 1E-6 = expr
           | otherwise = Apply (noSemCom (Csymbol (Just cd) op)) [noSemCom expr, noSemCom . Cn . CnReal $ actualVal]
@@ -925,6 +932,49 @@ dimensionallyCompatibleUnits (CanonicalUnits { cuBases = u1 }) (CanonicalUnits {
     u1e = M.toList u1
     u2e = M.toList u2
 
+untilM termcond ex v0 = do
+  term <- termcond v0
+  if term
+    then return v0
+    else ex v0 >>= untilM termcond ex
+
+simplifyModel (sm@SimplifiedModel { assertions = a }) =
+  (\x -> sm { assertions = fst $ x }) <$>
+    (untilM (return . not . snd) tryFurtherSimplifications (a, True))
+
+tryFurtherSimplifications (assertions, _) = do
+  assertions' <- mapM (\(Assertion (ex, ac@(AssertionContext m))) -> (\x -> Assertion (x, ac)) <$> simplifyMaths m ex) assertions
+  let substitutions = M.fromList $ mapMaybe toMaybeSubst assertions'
+  return $ foldl' (\(l, anyChange) (Assertion (ex, ac@(AssertionContext m))) ->
+                    let ex' = substituteInMaths m substitutions ex
+                    in
+                     ((Assertion (ex', ac)):l, anyChange || (ex /= ex')))
+                  ([], False) assertions'
+
+toMaybeSubst (Assertion
+              ((WithMaybeSemantics _ (WithCommon _ (Apply eq [arg1, arg2]))),
+               AssertionContext m))
+  | opIs "relation1" "eq" eq =
+    case (extractCI (stripSemCom arg1), extractConstant (stripSemCom arg2),
+          extractCI (stripSemCom arg2), extractConstant (stripSemCom arg1)) of
+      (Just n, Just c, _, _) |
+        Just (_, Just u, v) <- M.lookup n m -> Just (v, (c, u))
+      (_, _, Just n, Just c) |
+        Just (_, Just u, v) <- M.lookup n m -> Just (v, (c, u))
+      _ -> Nothing
+
+extractCI (ASTCi (Ci n)) = Just n
+extractCI _ = Nothing
+extractConstant (Cn cp) = Just (cpToDouble cp)
+
+substituteInMaths m sm ex = transformBi (substituteVariable m sm) ex
+substituteVariable m sm ex@(ASTCi (Ci n))
+  | Just (_, Just ucontext, v)  <- M.lookup n m,
+    Just (c, uvar) <- M.lookup v sm =
+      Cn (CnReal (convertReal uvar ucontext c))
+substituteVariable _ _ ex = ex
+
+simplifyMaths :: M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> ASTC -> ErrorT String IO ASTC
 simplifyMaths m (WithMaybeSemantics _ (WithCommon _ x)) =
   liftM noSemCom $ (simplifyMathAST m x)
   
@@ -965,22 +1015,40 @@ simplifyMathAST m (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just "fns
     return $ Apply (noSemCom $ Csymbol (Just "logic1") "and")
       (map (\(v1, v2) -> noSemCom $ Apply op [v1, v2]) $ zip l' (tail l'))
 
-simplifyMathAST m (Apply op@(WithMaybeSemantics _ (WithCommon _ (Csymbol (Just cd) expr))) ops) = do
-  ops' <- mapM (simplifyMaths m) ops
-  if all isConstantReal ops
-    then tryConstantApply cd expr (map (\(WithMaybeSemantics _ (WithCommon _ (Cn p))) -> cpToDouble p) ops')
-    else
-      if all isConstantBool ops
-        then tryConstantApplyBool cd expr (map toConstantBool ops')
-        else tryPartialApplyCombine cd expr ops'
-  -- To do: piecewise functions.
+simplifyMathAST m (Apply op@(WithMaybeSemantics _ (WithCommon _ (Csymbol (Just cd) expr))) ops)
+  | cd == "piece1"  && expr == "piecewise" = do
+    ops' <- mapM (simplifyMaths m) ops
+    let pieces = mapMaybe (extractPiecewisePiece . stripSemCom) ops'
+    let otherwise = listToMaybe . mapMaybe (extractPiecewiseOtherwise . stripSemCom) $ ops'
+    let pieces' = filter (\(_, x) -> not (isConstantBool (noSemCom x)) || toConstantBool (noSemCom x)) pieces
+    let defpieces = filter (isConstantBool . noSemCom . snd) pieces'
+    Debug.Trace.trace "In piecewise simplifier" (return ())
+    return $ case (defpieces, pieces', otherwise) of
+      -- If there is a piece that is always true, use it.
+      ((ex, _):_, _, _) -> ex
+      -- If all pieces are false, and there is an otherwise, use it.
+      (_, [], Just ow) -> stripSemCom ow
+      -- If only one piece isn't provably false, and there's no otherwise,
+      -- use it always...
+      (_, (ex, _):[], Nothing) -> ex
+      -- Otherwise re-assemble the piecewise from the parts...
+      (_, l, mo) -> Apply op (map (noSemCom . Apply (noSemCom $ Csymbol (Just "piece1") "piece") . (\(a,b) -> [noSemCom a, noSemCom b])) l ++ map (noSemCom . Apply (noSemCom $ Csymbol (Just "piece1") "otherwise") . (:[])) (maybeToList mo))
+
+  | otherwise = do
+    ops' <- mapM (simplifyMaths m) ops
+    if cd == "piece1" then
+      tryPartialApplyCombine cd expr ops'
+      else 
+      if all isConstantReal ops
+        then tryConstantApply cd expr (map (\(WithMaybeSemantics _ (WithCommon _ (Cn p))) -> cpToDouble p) ops')
+        else
+          if all isConstantBool ops
+            then tryConstantApplyBool cd expr (map toConstantBool ops')
+            else tryPartialApplyCombine cd expr ops'
 
 simplifyMathAST m cs@(Csymbol (Just "nums1") s)
   | Just v <- tryNums1Constant s = return v
   | otherwise = return cs
-
-simplifyMathAST m (ASTCi (Ci s))
-  | Just v <- M.lookup s m = v
 
 simplifyMathAST m (Apply op ops) =
   Apply <$> (simplifyMaths m op) <*> mapM (simplifyMaths m) ops
@@ -1031,7 +1099,7 @@ cpToDouble (CnReal v) = v
 cpToDouble (CnDouble v) = v
 cpToDouble (CnHexDouble v) = v
 
-tryConstantApply :: Monad m => String -> String -> [Double] -> ErrorT InvalidCellML m AST
+tryConstantApply :: Monad m => String -> String -> [Double] -> ErrorT String m AST
 tryConstantApply "arith1" o l = tryArith1ConstantApply o l
 tryConstantApply "transc1" o l = tryTransc1ConstantApply o l
 tryConstantApply "relation1" o l = tryRelation1ConstantApply o l
@@ -1040,7 +1108,7 @@ tryConstantApply "integer1" o l = tryInteger1ConstantApply o l
 tryConstantApply "nums1" "rational" [v1, v2] = return . Cn . CnReal $ v1 / v2
 tryConstantApply cd o _ = fail ("Unrecognised content dictionary: " ++ cd)
 
-tryConstantApplyBool :: Monad m => String -> String -> [Bool] -> ErrorT InvalidCellML m AST
+tryConstantApplyBool :: Monad m => String -> String -> [Bool] -> ErrorT String m AST
 tryConstantApplyBool "logic1" o l = tryLogic1ConstantApply o l
 tryConstantApplyBool "relation1" o l = tryRelation1ConstantApplyBool o l
 tryConstantApplyBool cd o _ = fail ("Unrecognised content dictionary for boolean expression: " ++ cd)

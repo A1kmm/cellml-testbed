@@ -16,14 +16,17 @@ import qualified Data.Array.IArray as A
 data SolverOpts = SolverOpts {
   modelURL :: String, componentOfBoundVariable :: String,
   boundVariableName :: String, lowerLimit :: Double, upperLimit :: Double,
-  relativeTolerance :: Double, absoluteTolerance :: Double } deriving (Show, Data, Typeable)
+  relativeTolerance :: Double, absoluteTolerance :: Double, 
+  dumpCode :: Bool } deriving (Show, Data, Typeable)
+
 solverOpts = SolverOpts { modelURL = def &= help "URL of the model to simulate",
                           componentOfBoundVariable = def &= help "The component containing the bound variable for the integral",
                           boundVariableName = def &= help "The name of the bound variable" &= opt ("time" :: String),
                           lowerLimit = def &= help "The lower limit of the integral to compute" &= opt (0 :: Double),
                           upperLimit = def &= help "The upper limit of the integral to compute" &= opt (10 :: Double),
                           relativeTolerance = def &= help "The relative solver tolerance" &= opt (1E-6 :: Double),
-                          absoluteTolerance = def &= help "The absolute solver tolerance" &= opt (1E-6 :: Double) }
+                          absoluteTolerance = def &= help "The absolute solver tolerance" &= opt (1E-6 :: Double), 
+                          dumpCode = def &= help "Dump generated code" }
 
 rightOrFail _ (Right x) = return x
 rightOrFail ef (Left e) = fail $ ef e
@@ -64,7 +67,7 @@ main = do
        runLoadModels (buildSimplifiedModel (modelURL cmd))
   vt <- justOrFail "Cannot find specified bound variable for integration" $ findTime m cmd
   rightOrFail (\x -> "Error running model: " ++ x) =<<
-    (runSolverOnDAESimplifiedModel m (DAEIntegrationSetup { daeModel = m, daeBoundVariable = vt }) $ do
+    (runSolverOnDAESimplifiedModel m (DAEIntegrationSetup { daeModel = m, daeBoundVariable = vt, daeWithGenCode = if dumpCode cmd then LBS.putStrLn else const (return ()) }) $ do
       DAEIntegrationResults idx rows <- solveModelWithParameters
              (DAEIntegrationProblem { daeParameterOverrides = [],
                                       daeBVarRange = (lowerLimit cmd, upperLimit cmd),

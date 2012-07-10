@@ -280,7 +280,7 @@ canonicaliseOneUnit lookupf m compPath modPath comp units
     when (uo /= 0 && not (M.null b)) . fail $ "Units " ++ (unitsName units) ++ ": Cannot have more than one unit element with offset"
     (s', CanonicalUnits { cuOffset = no, cuMultiplier = nm, cuBases = nb }) <-
       lookupf m compPath modPath comp s uu
-    return $ (s', CanonicalUnits { cuOffset = uo + no, cuMultiplier = om * um * nm,
+    return $ (s', CanonicalUnits { cuOffset = uo + no, cuMultiplier = om * um * nm * (10**up),
                                    cuBases = M.unionWith (+) b (M.map (*ue) nb)})
 
 findSpecificComponent :: (Monad m, ModelLoader m) => ModelPath -> IndexedModel -> String ->
