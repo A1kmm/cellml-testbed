@@ -49,7 +49,7 @@ makeCSVHeading (SimplifiedModel { variableInfo = VariableInfo vimap }) vToID =
                                 Nothing -> "Internal variable"
                                 Just (vpath, deg) ->
                                   displayPath vpath `LBS.append`
-                                  (LBS.concat (take 10 (repeat "'")))
+                                  (LBS.concat (take deg (repeat "'")))
                             ) [0..(M.size vToID)])
 
 displayPath (ModelPathComponent s cp) = (LBS.pack s) `LBS.append` ("/" `LBS.append` displayCPath cp)

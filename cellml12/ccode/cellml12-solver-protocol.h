@@ -36,7 +36,6 @@ void read_fully(size_t count, void* buf)
   size_t r;
   while (count > 0)
   {
-    fprintf(stderr, "Trying to read %d bytes\n", count);
     r = read(0, buf, count);
     if (r <= 0)
       exit(1);
@@ -48,10 +47,9 @@ void read_fully(size_t count, void* buf)
 void write_fully(size_t count, void* buf)
 {
   size_t w;
-  fprintf(stderr, "Trying to write %d bytes\n", count);
   while (count > 0)
   {
-    w = write(0, buf, count);
+    w = write(1, buf, count);
     if (w <= 0)
       exit(1);
     count -= w;
@@ -137,26 +135,23 @@ double* DoSolve(struct ArrayBundle* b, size_t n, int (*f)(void*,double*,double*)
   return paramArray;
 }
 
-int force = 0;
-
 int compute_residuals(double t, N_Vector yy, N_Vector yp, N_Vector r, void* user_data)
 {
-  int i;
+  int ret, i;
   double* work = user_data, * states = NV_DATA_S(yy), * rates = NV_DATA_S(yp),
         * residuals = NV_DATA_S(r);
 
-  for (i = 0; i < NVARS; i++)
-    force += states[i] == 1.23 ? 0 : 1;
-  for (i = 0; i < NVARS; i++)
-    force += rates[i] == 1.23 ? 0 : 1;;
+#ifdef DEBUG_RESIDUALS
   for (i = 0; i < NCONSTS; i++)
-    force += work[i + 1] == 1.23 ? 0 : 1;;
-
-  int ret = solveResiduals(t, work + 1, states, rates, residuals);
-  
+    fprintf(stderr, "CONSTANTS[i] = %g\n", i, work[1 + i]);
   for (i = 0; i < NVARS; i++)
-    force += residuals[i] == 1.23 ? 0 : 1;;
-
+    fprintf(stderr, "VARS[%d] = %g, RATES[%d] = %g\n", i, states[i], i, rates[i]);
+#endif
+  ret = solveResiduals(t, work + 1, states, rates, residuals);
+#ifdef DEBUG_RESIDUALS
+  for (i = 0; i < NVARS; i++)
+    fprintf(stderr, "residuals[%d] = %g\n", i, residuals[i]);
+#endif
   return ret;
 }
 
@@ -191,6 +186,18 @@ int ensure_consistent_at(double t, double* work)
   ones = N_VNew_Serial(NRESIDINITVARS);
   N_VConst(1.0, ones);
   flag = KINSol(solver, params, KIN_LINESEARCH, ones, ones);
+  paramsToState(NV_DATA_S(params), work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS);
+
+  {
+    double norm;
+    int i;
+    flag = KINGetFuncNorm(solver, &norm);
+#ifdef DEBUG_RESIDUALS
+    fprintf(stderr, "Final residual: %g, flag = %d\n", norm, flag);
+    for (i = 0; i < NRESIDINITVARS; i++)
+      fprintf(stderr, " param[%d] = %g\n", i, NV_DATA_S(params)[i]);
+#endif
+  }
 
   KINFree(&solver);
   N_VDestroy(ones);
@@ -201,9 +208,8 @@ int ensure_consistent_at(double t, double* work)
 
 int main(int argc, char** argv)
 {
-  sleep(5);
-
   double* work = malloc(sizeof(double) * NWORK);
+  memset(work, 0, sizeof(double) * NWORK);
 
   while (1)
   {
@@ -239,14 +245,16 @@ int main(int argc, char** argv)
     idaProblem = IDACreate();
     IDASetErrHandlerFn(idaProblem, err_report, NULL);
 
+    ensure_consistent_at(tStart, work);
+
     yvec = N_VMake_Serial(NVARS, work + 1 + NCONSTS);
     ypvec = N_VMake_Serial(NVARS, work + 1 + NCONSTS + NVARS);
 
+    IDASetUserData(idaProblem, work);
     IDAInit(idaProblem, compute_residuals, tStart, yvec, ypvec);
     IDASStolerances(idaProblem, relTol, absTol);
     IDASpgmr(idaProblem, 0);
     
-    ensure_consistent_at(tStart, work);
 
     // TODO: IDARootInit for piecewise changes...
 

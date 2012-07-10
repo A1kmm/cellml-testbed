@@ -34,7 +34,6 @@ import Data.Serialize.IEEE754
 import Data.Generics
 import Prelude hiding ((!!))
 import Data.CellML12.SystemDecomposer
-import qualified Debug.Trace
 
 data DAEIntegrationSetup = DAEIntegrationSetup {
     daeModel :: SimplifiedModel,
@@ -147,10 +146,10 @@ solveModelWithParameters p = do
   s0 <- get
   (numericalResult, rest) <- lift . ErrorT . return $ flip runGetLazyState s0 $ getOutput $ M.size vmap
   put rest
-  case numericalResult of
-    (NumericalError str):d -> fail $ "Numerical problem: " ++ str
-    NumericalSuccess:d -> do
-      let r = (map (\x -> (x!iBound, x)) . mapMaybe onlyData $ d)
+  case last numericalResult of
+    NumericalError str -> fail $ "Numerical problem: " ++ str
+    NumericalSuccess -> do
+      let r = (map (\x -> (x!iBound, x)) . mapMaybe onlyData $ numericalResult)
       return $ DAEIntegrationResults { daeResultIndices = M.map (\(a, b) -> fromJust $ a `mplus` b) vmap, daeResults = r }
     _ -> fail "Incomplete results - solver program may have crashed"
 
@@ -172,14 +171,13 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $
       -- twice, because we need to simplify derivative degrees to get the units, but
       -- the units conversions might be able to be simplified out.
       code <- ErrorT (return (writeDAECode vmap mUnits setup c))
-      liftIO $ LBS.putStrLn code
       withSystemTempDirectory' "daesolveXXX" $ \fn -> do
         liftIO $ LBS.writeFile (fn </> "solve.c") code
-        ec <- liftIO $ system $ showString "gcc -ggdb -O0 -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lblas -llapack " . showString (fn </> "solve.c") . showString " -o " $ fn </> "solve"
+        ec <- liftIO $ system $ showString "gcc -ggdb -O0 -Wall " . showString (fn </> "solve.c") . showString " -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lblas -llapack " . showString " -o " $ fn </> "solve"
         if ec /= ExitSuccess then fail "Cannot find C compiler" else do
         (Just i, Just o, _, p) <-
           liftIO $ createProcess $
-            CreateProcess { cmdspec = RawCommand {- (fn </> "solve") [] -} "valgrind" [fn</>"solve"], cwd = Nothing,
+            CreateProcess { cmdspec = RawCommand (fn </> "solve") [], cwd = Nothing,
                             env = Nothing, std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit,
                             close_fds = False, create_group = False }
         ecMvar <- liftIO newEmptyMVar
@@ -188,8 +186,8 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $
           putMVar ecMvar ec'
         lStr <- liftIO $ LBS.hGetContents o
         ret <- evalStateT (runReaderT (unsolver solver) (i, vmap, setup)) lStr
-        liftIO $ BS.hPutStr o (BS.pack "\x01") -- Send exit command.
-        liftIO $ hFlush o
+        liftIO $ BS.hPutStr i (BS.pack "\x01") -- Send exit command.
+        liftIO $ hFlush i
         ec' <- liftIO $ takeMVar ecMvar
         when (ec' /= ExitSuccess) $ fail "Problem executing integrator program"
         return ret
@@ -1214,4 +1212,4 @@ daeInitialSuffix = "}\n"
 daeResidualPrefix = "int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* residuals)\n{\n"
 daeResidualSuffix = "}\n"
 paramToStatePrefix = "int paramsToState(double* params, double* STATES, double* RATES)\n{\n"
-paramToStateSuffix = "}\n"
+paramToStateSuffix = "  return 0;\n}\n"
