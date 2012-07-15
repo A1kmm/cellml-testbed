@@ -954,7 +954,7 @@ tryFurtherSimplifications (assertions, _) = do
 toMaybeSubst (Assertion
               ((WithMaybeSemantics _ (WithCommon _ (Apply eq [arg1, arg2]))),
                AssertionContext m))
-  | opIs "relation1" "eq" eq =
+  | opIs "relation1" "eq" eq = 
     case (extractCI (stripSemCom arg1), extractConstant (stripSemCom arg2),
           extractCI (stripSemCom arg2), extractConstant (stripSemCom arg1)) of
       (Just n, Just c, _, _) |
@@ -962,10 +962,12 @@ toMaybeSubst (Assertion
       (_, _, Just n, Just c) |
         Just (_, Just u, v) <- M.lookup n m -> Just (v, (c, u))
       _ -> Nothing
+toMaybeSubst _ = Nothing
 
 extractCI (ASTCi (Ci n)) = Just n
 extractCI _ = Nothing
 extractConstant (Cn cp) = Just (cpToDouble cp)
+extractConstant _ = Nothing
 
 substituteInMaths m sm ex = transformBi (substituteVariable m sm) ex
 substituteVariable m sm ex@(ASTCi (Ci n))
@@ -1022,7 +1024,6 @@ simplifyMathAST m (Apply op@(WithMaybeSemantics _ (WithCommon _ (Csymbol (Just c
     let otherwise = listToMaybe . mapMaybe (extractPiecewiseOtherwise . stripSemCom) $ ops'
     let pieces' = filter (\(_, x) -> not (isConstantBool (noSemCom x)) || toConstantBool (noSemCom x)) pieces
     let defpieces = filter (isConstantBool . noSemCom . snd) pieces'
-    Debug.Trace.trace "In piecewise simplifier" (return ())
     return $ case (defpieces, pieces', otherwise) of
       -- If there is a piece that is always true, use it.
       ((ex, _):_, _, _) -> ex

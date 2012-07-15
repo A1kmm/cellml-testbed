@@ -254,19 +254,23 @@ int main(int argc, char** argv)
     IDAInit(idaProblem, compute_residuals, tStart, yvec, ypvec);
     IDASStolerances(idaProblem, relTol, absTol);
     IDASpgmr(idaProblem, 0);
-    
+    IDASetStopTime(idaProblem, tEnd);
 
     // TODO: IDARootInit for piecewise changes...
 
-    while (IDASolve(idaProblem, tEnd, &tActual, yvec, ypvec, IDA_ONE_STEP) == IDA_SUCCESS)
+    while (1)
     {
+      solret = IDASolve(idaProblem, tEnd, &tActual, yvec, ypvec, IDA_ONE_STEP);
+      if (solret != IDA_SUCCESS && solret != IDA_TSTOP_RETURN)
+        break;
+
       /* Send NumericalData */
       byte = 2;
       write_fully(1, &byte);
       work[0] = tActual;
       write_fully(NWORK * sizeof(double), work);
 
-      if (tEnd - tActual >= fabs(1E-6 * (tEnd - tStart)))
+      if (tEnd - tActual <= fabs(1E-6 * (tEnd - tStart)))
       {
         wasSuccess = 1;
         break;

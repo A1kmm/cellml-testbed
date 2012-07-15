@@ -50,7 +50,7 @@ buildAssertions m comps unitsTable typeTable varMap =
       comp = withoutCommon . iComponent $ icomp
       variableToContextPart (WithCommon _ v) = 
         (variableName v, (typeTable ! (cp, variableName v),
-                          M.lookup (cp, variableName v) unitsTable,
+                          variableUnits v >>= \x -> M.lookup (cp, x) unitsTable,
                           varMap ! (cp, variableName v)))
       assertVarMap = M.fromList $ map variableToContextPart (componentVariables comp)
     in
