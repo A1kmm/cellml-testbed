@@ -258,9 +258,10 @@ int main(int argc, char** argv)
 
     // TODO: IDARootInit for piecewise changes...
 
+    solret = IDA_SUCCESS;
+    tActual = tStart;
     while (1)
     {
-      solret = IDASolve(idaProblem, tEnd, &tActual, yvec, ypvec, IDA_ONE_STEP);
       if (solret != IDA_SUCCESS && solret != IDA_TSTOP_RETURN)
         break;
 
@@ -275,6 +276,8 @@ int main(int argc, char** argv)
         wasSuccess = 1;
         break;
       }
+
+      solret = IDASolve(idaProblem, tEnd, &tActual, yvec, ypvec, IDA_ONE_STEP);
     }
 
     if (wasSuccess)

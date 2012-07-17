@@ -16,6 +16,7 @@ import Control.Monad.IO.Class
 import Control.Monad.IO.Unwrappable
 import Control.Monad.Reader
 import Control.Monad.State
+import Control.Monad.Identity
 import System.IO
 import Data.List hiding ((!!))
 import Data.Char
@@ -78,7 +79,7 @@ data NumericalEntry = NumericalError String | NumericalSuccess | NumericalData (
 class Monad m => MonadSolver m where
   liftSolver :: Monad m2 => SolverT m2 a -> m a
 
-newtype CodeGen a = CodeGen { runCodeGen :: (LBS.ByteString, LBS.ByteString, Int)  ->
+newtype CodeGen a = CodeGen { runCodeGen :: (LBS.ByteString, LBS.ByteString, Int) ->
                                             Either String (LBS.ByteString, LBS.ByteString, Int, a) }
 instance Monad CodeGen where
   return x = CodeGen (\(a,b,c) -> Right (a,b,c,x))
@@ -260,7 +261,6 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
       | name == "neq" = binaryOperator "((" ")!=(" "))"
       | name == "leq" = binaryOperator "((" ")<=(" "))"
       | name == "geq" = binaryOperator "((" ")>=(" "))"
-      | name == "geq" = binaryOperator "((" ")>=(" "))"
       | otherwise = fail $ "Unknown relation1 symbol " ++ name
     putArithExpression
       | name == "lcm" = naryOperator ("lcm(" `LBS.append` (LBS.pack . show . length $ operands)
@@ -280,7 +280,7 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
     invTrig = ["csc", "sec", "cot"]
     putTranscExpression
       -- XXX we could simplify the constant base case
-      | name == "log" = binaryOperator "(log(" ")/log(" "))"
+      | name == "log" = binaryOperatorFlipped "(log(" ")/log(" "))"
       | name == "ln" = unaryOperator "log(" ")"
       | name == "exp" = unaryOperator "exp(" ")"
       | name `S.member` (S.fromList basicTrig) = unaryOperator (LBS.pack $ name ++ "(") ")"
@@ -312,6 +312,14 @@ putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (J
       | otherwise = fail "Unary operator must have exactly one argument"
     binaryOperator a b c
       | [op1, op2] <- operands = do
+        cgAppend a
+        putExpression ep vmap ctx (stripSemCom op1)
+        cgAppend b
+        putExpression ep vmap ctx (stripSemCom op2)
+        cgAppend c
+      | otherwise = fail "Binary operator must have exactly one argument"
+    binaryOperatorFlipped a b c
+      | [op2, op1] <- operands = do
         cgAppend a
         putExpression ep vmap ctx (stripSemCom op1)
         cgAppend b
@@ -373,7 +381,7 @@ assignIndicesToVariables setup m constVars varVars =
     -- Every state corresponding to a rate becomes a variable...
     varsPair = (S.map (\(a, b) -> (a, b - 1)) . S.filter (\(_, b) -> b > 0) $ varsPair' `S.union` constVarsExcludingIVs)
                `S.union` varsPair'
-    nVars = S.size varVars
+    nVars = S.size (S.filter (\(_, v, _) -> v == 1) varVars)
     varsRates = M.fromList $ (zip (S.toList varsPair) [(Nothing, Just i) | i <- [(nConsts + 1)..(nConsts + nVars)]]) ++
                              (zip (S.toList $ S.map (\(a, b) -> (a, b + 1)) varsPair)
                                   [(Nothing, Just i) | i <- [(nConsts + nVars + 1)..(nConsts + nVars * 2)]])
@@ -472,7 +480,9 @@ writeDAECode vmap model problem classification =
         cgAppend residInitialisation
         cgAppend paramToStateSuffix
         
-        -- To do: analytic Jacobian?
+        cgAppend daeJacobianPrefix
+        putModelJacobian vmap model problem classification
+        cgAppend daeJacobianSuffix
         -- To do: uncertain starting parameters.
   in
    case ret of
@@ -595,6 +605,37 @@ putModelResiduals vmap@(VariableMap { vmapMap = m }) model problem (constVars, v
         putExpression TimeVaryingEvaluation vmap ctx (stripSemCom ieq)
       cgAppend ")) ? 0 : 1;\n"
 
+putModelJacobian vmap@(VariableMap { vmapNConsts = nconsts, vmapMap = m }) model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
+  forM_ (zip [0..] eqnVary) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), AssertionContext ctx)) -> do
+    cgAppend . LBS.pack $ "Jv[" ++ show i ++ "] = "
+    forM_ (zip [0..] $ filter (\(v, d, iv) -> d == 0 && not iv) $ S.toList varVars) $ \(j, (v, d, _)) -> do
+      ex <- either fail return . runIdentity . runErrorT $
+            (repeatedlySimplify ctx) =<< (takePartialDerivativeEx ctx (v,d)
+                                          (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b]))
+      when (j /= 0) $ cgAppend " + "
+      let Just (_, Just jVar) = M.lookup (v, d) m
+      cgAppend . LBS.pack $ "v[" ++ show (jVar - 1 - nconsts) ++ "] * ("
+      putExpression TimeVaryingEvaluation vmap ctx ex
+      cgAppend ")"
+    cgAppend ";\n"
+  let needsCopy x
+        | Just (Just _, Just _) <- mx = True
+        | otherwise = False
+        where mx = M.lookup x m
+  forM_ (zip [length eqnVary..] (filter (\((v, deg, iv)) -> not iv && needsCopy (v, deg)) . S.toList $ constVars `S.union` varVars)) $
+    \(i, (v, d, _)) -> do
+      cgAppend . LBS.pack $ "Jv[" ++ show i ++ "] = "
+      case M.lookup (v, d) m of
+        Just (_, Just jVar) -> cgAppend . LBS.pack $ "v[" ++ show jVar ++ "];\n"
+        _ -> cgAppend "0;\n"
+
+repeatedlySimplify :: (Monad m, Functor m) => M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> AST -> ErrorT String m AST
+repeatedlySimplify m ex = fst <$> (flip (untilM (return . snd)) (ex, False) $ \(x, _) -> do
+  let x' = transformBi (simplificationRules m) x
+  x'' <- simplifyMathAST m x'
+  Debug.Trace.trace ("(x, x', x'') = " ++ show (x, x', x'')) return ()  
+  return (x'', x''==x))
+
 -- | A getter for parsing the output from the simulator.
 getOutput :: Int -> Get [NumericalEntry]
 getOutput l = do
@@ -656,7 +697,7 @@ classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (
       partition (all (\var@(_, _, isIV) -> isIV || S.member var constVarSet) . findAssertionVariableUsage)
     (ieqConst, ieqVary) = partitionByUsage inequalities
   in
-   if nEqns == nVarsNoTime then
+   if nEqns == nVarsNoStates then
      return (constVarSet, varSet, reverse constEqns', varEqns, ieqConst, ieqVary)
    else fail $ "Trying to solve a model with " ++ (show nEqns) ++ " equations but " ++ (show nVarsNoTime) ++ " unknowns."
 
@@ -932,6 +973,7 @@ dimensionallyCompatibleUnits (CanonicalUnits { cuBases = u1 }) (CanonicalUnits {
     u1e = M.toList u1
     u2e = M.toList u2
 
+untilM :: Monad m => (a -> m Bool) -> (a -> m a) -> a -> m a
 untilM termcond ex v0 = do
   term <- termcond v0
   if term
@@ -946,10 +988,35 @@ tryFurtherSimplifications (assertions, _) = do
   assertions' <- mapM (\(Assertion (ex, ac@(AssertionContext m))) -> (\x -> Assertion (x, ac)) <$> simplifyMaths m ex) assertions
   let substitutions = M.fromList $ mapMaybe toMaybeSubst assertions'
   return $ foldl' (\(l, anyChange) (Assertion (ex, ac@(AssertionContext m))) ->
-                    let ex' = substituteInMaths m substitutions ex
+                    let ex' = transformBi (simplificationRules m) (substituteInMaths m substitutions ex)
                     in
                      ((Assertion (ex', ac)):l, anyChange || (ex /= ex')))
                   ([], False) assertions'
+
+simplificationRules :: M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> AST -> AST
+simplificationRules m (Apply op args)
+  | opIs "arith1" "times" op, [arg] <- args = stripSemCom arg
+  | opIs "arith1" "times" op, [] <- args = Cn (CnInteger 1)
+  | opIs "arith1" "plus" op, [arg] <- args = stripSemCom arg
+  | opIs "arith1" "plus" op, [] <- args = Cn (CnInteger 0)
+  | opIs "arith1" "minus" op, [arg1, WithMaybeSemantics _ (WithCommon _ (Cn v))] <-
+      args, cp <- cpToDouble v, cp == 0 = stripSemCom arg1
+  | opIs "arith1" "minus" op, [arg1, arg2] <-
+      args, arg1 == arg2 = Cn (CnInteger 0)
+  | opIs "arith1" "times" op, any (isParticularConstant 0 . stripSemCom) args = Cn (CnInteger 0)
+  | opIs "arith1" "divide" op, [arg1, arg2] <- args, isParticularConstant 0 (stripSemCom arg1) = Cn (CnInteger 0)
+  | opIs "arith1" "divide" op, [arg1, arg2] <- args, isParticularConstant 1 (stripSemCom arg2) = stripSemCom arg1
+  | opIs "arith1" "power" op, [arg1, arg2] <- args, isParticularConstant 1 (stripSemCom arg2) = stripSemCom arg1
+  | opIs "arith1" "power" op, [arg1, arg2] <- args, isParticularConstant 0 (stripSemCom arg1) = Cn (CnInteger 0)
+  | opIs "arith1" "power" op, [arg1, arg2] <- args, isParticularConstant 0 (stripSemCom arg2) = Cn (CnInteger 1)
+  | opIs "arith1" "power" op, [arg1, arg2] <- args, isParticularConstant 1 (stripSemCom arg1) = Cn (CnInteger 1)
+  | opIs "arith1" "plus" op = Apply op (filter (not . isParticularConstant 0 . stripSemCom) args)
+  | opIs "arith1" "times" op = Apply op (filter (not . isParticularConstant 1 . stripSemCom) args)
+simplificationRules m ex = ex
+
+isParticularConstant :: Double -> AST -> Bool
+isParticularConstant n (Cn p) | cpToDouble p == n = True
+isParticularConstant _ _ = False
 
 toMaybeSubst (Assertion
               ((WithMaybeSemantics _ (WithCommon _ (Apply eq [arg1, arg2]))),
@@ -976,7 +1043,7 @@ substituteVariable m sm ex@(ASTCi (Ci n))
       Cn (CnReal (convertReal uvar ucontext c))
 substituteVariable _ _ ex = ex
 
-simplifyMaths :: M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> ASTC -> ErrorT String IO ASTC
+simplifyMaths :: Monad m => M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> ASTC -> ErrorT String m ASTC
 simplifyMaths m (WithMaybeSemantics _ (WithCommon _ x)) =
   liftM noSemCom $ (simplifyMathAST m x)
   
@@ -993,6 +1060,7 @@ toConstantBool _ = error "toConstantBool given an expression which isn't MathML 
 constantBoolAsMathML True = Csymbol (Just "logic1") "true"
 constantBoolAsMathML False = Csymbol (Just "logic1") "false"
 
+simplifyMathAST :: Monad m => M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> AST -> ErrorT String m AST
 simplifyMathAST m (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just "nums1") "based_integer")))
                          [ex, WithMaybeSemantics _ (WithCommon _ (Cs bs))]) = do
   ex' <- simplifyMaths m ex
@@ -1052,10 +1120,10 @@ simplifyMathAST m cs@(Csymbol (Just "nums1") s)
   | otherwise = return cs
 
 simplifyMathAST m (Apply op ops) =
-  Apply <$> (simplifyMaths m op) <*> mapM (simplifyMaths m) ops
+  Apply `liftM` (simplifyMaths m op) `ap` (mapM (simplifyMaths m) ops)
   
 simplifyMathAST m (Bind op bvars operand) =
-  Bind <$> (simplifyMaths m op) <*> (return bvars) <*> (simplifyMaths m operand)
+  Bind `liftM` (simplifyMaths m op) `ap` (return bvars) `ap` (simplifyMaths m operand)
 
 simplifyMathAST _ v = return v
 
@@ -1074,6 +1142,7 @@ tryPartialApplyCombine cd sym ops
     cconst <- tryConstantApply cd sym (map (\(WithMaybeSemantics _ (WithCommon _ (Cn p))) -> cpToDouble p) sconst)
     case () of
       () | cconst == Cn (CnReal 0) && sym == "times" -> return (Cn . CnReal $ 0)
+         | null svar -> return cconst
          | null (tail svar) &&
            ((cconst == Cn (CnReal 1) && sym == "times") || 
             (cconst == Cn (CnReal 0) && sym == "plus")) ->
@@ -1271,9 +1340,319 @@ basedDigit c
   | c >= 'A' && c <= 'Z' = return (ord c - ord 'A' + 10)
   | otherwise = fail $ "Invalid 'digit' " ++ c:(" in based digit string")
 
+takePartialDerivative (Assertion (ex, AssertionContext m)) wrt = takePartialDerivativeEx m wrt (stripSemCom ex)
+
+takePartialDerivativeEx :: (Functor m, Monad m) => M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> (VariableID, Int) -> AST -> ErrorT String m AST
+takePartialDerivativeEx m _ (Cn _) = return $ Cn (CnInteger 0)
+takePartialDerivativeEx m (wrtv, wrtn) (ASTCi (Ci n))
+  | Just (_, _, v) <- M.lookup n m, v == wrtv, wrtn == 0 = return $ Cn (CnInteger 1)
+  | otherwise = return $ Cn (CnInteger 0)
+  
+takePartialDerivativeEx m wrt (Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just cd) name))) args)
+  | cd == "piece1" = takePartialDerivativePiece
+  | cd == "arith1" = takePartialDerivativeArith
+  | cd == "transc1" = takePartialDerivativeTransc
+  | cd == "rounding1" = takePartialDerivativeRounding
+  | otherwise = fail $ "Don't know how to differentiate symbols from content dictionary " ++ cd
+  where
+    takePartialDerivativePiece
+      | name == "piecewise" =
+        (Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "piece1") "piecewise")))) `liftM`
+          (mapM (\x -> noSemCom `liftM` (takePartialDerivativePiecewisePart . stripSemCom $ x)) args)
+      | otherwise = fail $ "Can't differentiate piece1 symbol " ++ cd
+    takePartialDerivativePiecewisePart :: (Functor m, Monad m) => AST -> ErrorT String m AST
+    takePartialDerivativePiecewisePart (Apply op [arg1, arg2])
+      | opIs "piece1" "piece" op = takePartialDerivativeEx m wrt (stripSemCom arg1) >>= \x -> return (Apply op [noSemCom x, arg2])
+    takePartialDerivativePiecewisePart (Apply op [arg1])
+      | opIs "piece1" "otherwise" op = (Apply op . (:[]) . noSemCom) `liftM` takePartialDerivativeEx m wrt (stripSemCom arg1)
+    takePartialDerivativePiecewisePart _ = fail "Tried to take derivative of invalid piecewise part"
+    takePartialDerivativeArith :: (Functor m, Monad m) => ErrorT String m AST
+    takePartialDerivativeArith
+      | name == "lcm" = return $ Cn (CnInteger 0) -- It is not differentiable over R, but is 0 at all R \ N
+      | name == "gcd" = return $ Cn (CnInteger 0)
+      | name == "plus" = (Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "plus")))) `liftM`
+                           (mapM (\x -> liftM noSemCom (takePartialDerivativeEx m wrt . stripSemCom $ x)) args)
+      | name == "unary_minus" =
+        Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "unary_minus"))) `liftM`
+          mapM (\x -> liftM noSemCom (takePartialDerivativeEx m wrt . stripSemCom $ x)) args
+      | name == "minus" =
+        Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "minus"))) `liftM`
+          mapM (\x -> liftM noSemCom (takePartialDerivativeEx m wrt . stripSemCom $ x)) args
+      | name == "times", f:[] <- args = do
+        takePartialDerivativeEx m wrt (stripSemCom f)
+      | name == "times", g:h:[] <- args = do
+        g' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom g)
+        h' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom h)
+        return $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "plus"))) [
+          noSemCom $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "times"))) [g, g'],
+          noSemCom $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "times"))) [h, h']
+          ]
+      | name == "times", l <- args = do
+        let ll = length l
+            ls = ll `div` 2
+            l1 = take ls l
+            l2 = drop ls l
+        takePartialDerivativeEx m wrt (Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+                                          noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "times") l1,
+                                          noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "times") l2])
+      | name == "divide", [g, h] <- args = do
+        g' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom g)
+        h' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom h)
+        return $
+          Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "divide")))
+            [noSemCom $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "minus")))
+             [noSemCom $ Apply (noSemCom (Csymbol (Just "arith1") "times")) [g', h],
+              noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [g, h']],
+             noSemCom $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "power")))
+                          [h,
+                           noSemCom $ Cn (CnInteger 2)]]
+      | name == "power", [arg1, WithMaybeSemantics _ (WithCommon _ (Cn arg2))] <- args = do
+        -- This f(x)^n rule is only needed because our simplifier is not good enough to recover
+        -- from the generality of the f(x)^g(x) rule yet.
+        -- cpToDouble arg2
+        Debug.Trace.trace ("power(" ++ show args ++ ")") (return ())
+        arg1' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom arg1)
+        return $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "times"))) [
+          noSemCom $ Cn (CnDouble (cpToDouble arg2 - 1)),
+            noSemCom $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "power"))) [
+              arg1,
+              noSemCom $ Cn (CnDouble (cpToDouble arg2 - 1))
+                                                                                                     ],
+            arg1'
+          ]
+      | name == "power", [f, g] <- args = do
+        f' <- noSemCom `liftM` takePartialDerivativeEx m wrt (stripSemCom f)
+        g' <- noSemCom `liftM` takePartialDerivativeEx m wrt (stripSemCom g)
+        return $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "times"))) [noSemCom $
+          Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "plus"))) [noSemCom $
+             Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "times"))) [noSemCom $
+                Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "transc1") "ln"))) [f], g'
+                ],
+             noSemCom $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "divide"))) [noSemCom $
+               Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "times"))) [g, f'],
+               f
+                                                                                            ]
+                                                                                       ],
+          noSemCom $ Apply (WithMaybeSemantics s (WithCommon c (Csymbol (Just "arith1") "power"))) [f, g]
+                                                                                               ]
+      | name == "abs", [arg] <- args =
+        takePartialDerivativeEx m wrt (Apply (noSemCom $ Csymbol (Just "piece1") "piecewise") [
+          noSemCom $ Apply (noSemCom $ Csymbol (Just "piece1") "piece") [
+             arg,
+             noSemCom $ Apply (noSemCom $ Csymbol (Just "relation1") "geq") [arg, noSemCom $ Cn (CnInteger 0)]
+             ],
+          noSemCom $ Apply (noSemCom $ Csymbol (Just "piece1") "otherwise") [
+             noSemCom $ Apply (noSemCom $ Csymbol (Just "piece1") "unary_minus") [arg]
+             ]
+          ])
+      | name == "root", [WithMaybeSemantics _ (WithCommon _ arg1), WithMaybeSemantics _ (WithCommon _ arg2)] <- args = do
+          -- Doing this simplify first works around limitations of the simplifier that hit later.
+          rootPow <- {- repeatedlySimplify m $ -} return $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+            noSemCom $ Cn (CnInteger 1), noSemCom arg2]
+          takePartialDerivativeEx m wrt
+            (Apply (noSemCom $ Csymbol (Just "arith1") "power") [noSemCom arg1, noSemCom $ rootPow])
+      | otherwise = fail $ "Could not differentiate arith1 operator with name " ++ name
+    takePartialDerivativeTransc
+      | name == "log", [g, h] <- args =
+        takePartialDerivativeEx m wrt (Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+          noSemCom (Apply (noSemCom $ Csymbol (Just "transc1") "ln") [g]),
+          noSemCom (Apply (noSemCom $ Csymbol (Just "transc1") "ln") [h])
+          ])
+      | name == "ln", [f] <- args = do
+          f' <- takePartialDerivativeEx m wrt (stripSemCom f)
+          return (
+            Apply (noSemCom $ Csymbol (Just "arith1") "times") [noSemCom f', noSemCom $
+              Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+                noSemCom $ Cn (CnInteger 1), f]
+                                                               ]
+            )
+      | name == "exp", [f] <- args = do
+          f' <- takePartialDerivativeEx m wrt (stripSemCom f)
+          return (
+            Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+               noSemCom f',
+               noSemCom $ Apply (noSemCom $ Csymbol (Just "transc1") "exp") [f]
+               ]
+            )
+      | name == "csc" = inverseTrigDeriv "sin" args
+      | name == "sec" = inverseTrigDeriv "cos" args
+      | name == "cot" = inverseTrigDeriv "tan" args
+      | name == "csch" = inverseTrigDeriv "sinh" args
+      | name == "sech" = inverseTrigDeriv "cosh" args
+      | name == "coth" = inverseTrigDeriv "tanh" args
+      | name == "arccsc" = inverseArcTrigDeriv "arcsin" args
+      | name == "arcsec" = inverseArcTrigDeriv "arccos" args
+      | name == "arccot" = inverseArcTrigDeriv "arctan" args
+      | name == "arccsch" = inverseArcTrigDeriv "arcsinh" args
+      | name == "arcsech" = inverseArcTrigDeriv "arccosh" args
+      | name == "arccoth" = inverseArcTrigDeriv "arctanh" args
+      | name == "sin", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "transc1") "cos") [f]
+          ]
+      | name == "cos", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Cn (CnInteger (-1)),
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "transc1") "sin") [f]
+          ]
+      | name == "tan", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+              noSemCom $ Cn (CnInteger 1),
+              noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "power") [
+                noSemCom $ Apply (noSemCom $ Csymbol (Just "transc1") "sec") [f],
+                noSemCom $ Cn (CnInteger 2)
+                ]]
+          ]
+      | name == "sinh", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "transc1") "cosh") [f]
+          ]
+      | name == "cosh", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "transc1") "sinh") [f]
+          ]
+      | name == "tanh", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+              noSemCom $ Cn (CnInteger 1),
+              noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "power") [
+                noSemCom $ Apply (noSemCom $ Csymbol (Just "transc1") "sech") [f],
+                noSemCom $ Cn (CnInteger 2)
+                ]]
+          ]
+      | name == "arcsin", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+              noSemCom $ Cn (CnInteger 1),
+              noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "root") [
+                noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "minus") [
+                   noSemCom $ Cn (CnInteger 1),
+                   noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "power") [
+                     f, noSemCom $ Cn (CnInteger 2)
+                                                                                 ]
+                                                                              ],
+                noSemCom $ Cn (CnInteger 2)
+                                                                             ]
+          ]]
+      | name == "arccos", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+              noSemCom $ Cn (CnInteger (-1)),
+              noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "root") [
+                noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "minus") [
+                   noSemCom $ Cn (CnInteger 1),
+                   noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "power") [
+                     f, noSemCom $ Cn (CnInteger 2)
+                                                                                 ]
+                                                                              ],
+                noSemCom $ Cn (CnInteger 2)
+                                                                             ]
+          ]]
+      | name == "arctan", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+              noSemCom $ Cn (CnInteger 1),
+                noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "plus") [
+                   noSemCom $ Cn (CnInteger 1),
+                   noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "power") [
+                     f, noSemCom $ Cn (CnInteger 2)
+                                                                                 ]
+                                                                              ]
+          ]]
+
+
+      | name == "arcsinh", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+              noSemCom $ Cn (CnInteger 1),
+              noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "root") [
+                noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "plus") [
+                   noSemCom $ Cn (CnInteger 1),
+                   noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "power") [
+                     f, noSemCom $ Cn (CnInteger 2)
+                                                                                 ]
+                                                                              ],
+                noSemCom $ Cn (CnInteger 2)
+                                                                             ]
+          ]]
+      | name == "arccosh", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+              noSemCom $ Cn (CnInteger (-1)),
+              noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "root") [
+                noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "minus") [
+                   noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "power") [
+                     f, noSemCom $ Cn (CnInteger 2)
+                                                                                 ],
+                   noSemCom $ Cn (CnInteger 1)                   
+                                                                              ],
+                noSemCom $ Cn (CnInteger 2)
+                                                                             ]
+          ]]
+      | name == "arctanh", [f] <- args = do
+        f' <- liftM noSemCom $ takePartialDerivativeEx m wrt (stripSemCom f)
+        return $ Apply (noSemCom $ Csymbol (Just "arith1") "times") [
+            f',
+            noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+              noSemCom $ Cn (CnInteger 1),
+                noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "minus") [
+                   noSemCom $ Cn (CnInteger 1),
+                   noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "power") [
+                     f, noSemCom $ Cn (CnInteger 2)
+                                                                                 ]
+                                                                              ]
+          ]]
+    inverseTrigDeriv n l =
+      takePartialDerivativeEx m wrt (Apply (noSemCom $ Csymbol (Just "arith1") "divide") [
+                                        noSemCom $ Cn (CnInteger 1),
+                                        noSemCom $ Apply (noSemCom $ Csymbol (Just "transc1") n) l])
+    inverseArcTrigDeriv n (v:_) =
+      takePartialDerivativeEx m wrt (Apply (noSemCom $ Csymbol (Just "transc1") n) [
+         noSemCom $ Apply (noSemCom $ Csymbol (Just "arith1") "divide") [noSemCom $ Cn (CnInteger 1), v]
+                                        ])
+    inverseArcTrigDeriv n [] = fail "Attempt to take derivative of inverse arc trig function with no arguments"
+    takePartialDerivativeRounding
+      -- It is not differentiable over R, but is 0 at afm points in any finite range.
+      | name == "ceiling" = return $ Cn (CnInteger 0)
+      | name == "floor" = return $ Cn (CnInteger 0)
+      | name == "round" = return $ Cn (CnInteger 0)
+      | name == "trunc" = return $ Cn (CnInteger 0)
+      | otherwise = fail $ "Don't know how to take derivative of rounding1 function " ++ name
+
+takePartialDerivativeEx m (wrtv, wrtd) (Apply (WithMaybeSemantics _ (WithCommon _
+                                 (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just "calculus1") "diff"))) [f]
+                                 ))) [t])
+  | Just n <- tryGetLambdaVariable (stripSemCom f), Just (_, _, v) <- M.lookup n m =
+    if wrtd == 1 && wrtv == v then return (Cn (CnInteger 1)) else return (Cn (CnInteger 0))
+
+takePartialDerivativeEx _ _ ex = fail $ "Don't know how to take a partial derivative of " ++ show ex
+
 daeBoilerplateCode =
   "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES);\n\
-  \int computeResiduals(double t, double* CONSTANTS, double* STATES, double* RATES);\n\
+  \int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* residuals);\n\
   \int paramsToState(double* params, double* STATES, double* RATES);\n\
   \#include \"cellml12-solver-protocol.h\"\n"
 daeInitialPrefix = "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES)\n{\n"
@@ -1282,3 +1661,6 @@ daeResidualPrefix = "int solveResiduals(double t, double* CONSTANTS, double* STA
 daeResidualSuffix = "}\n"
 paramToStatePrefix = "int paramsToState(double* params, double* STATES, double* RATES)\n{\n"
 paramToStateSuffix = "  return 0;\n}\n"
+
+daeJacobianPrefix = "void solveJacobianxVec(double t, double* CONSTANTS, double* STATES, double* RATES, double* v, double* Jv)\n{\n"
+daeJacobianSuffix = "}\n"
