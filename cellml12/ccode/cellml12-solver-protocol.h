@@ -155,6 +155,16 @@ int compute_residuals(double t, N_Vector yy, N_Vector yp, N_Vector r, void* user
   return ret;
 }
 
+int compute_jacobian(double t, N_Vector yy, N_Vector yp, N_Vector r, N_Vector vv, N_Vector Jvv, double alpha, void* user_data, N_Vector tmp1, N_Vector tmp2)
+{
+  double * work = user_data, * states = NV_DATA_S(yy), * rates = NV_DATA_S(yp),
+    * residuals = NV_DATA_S(r), * v = NV_DATA_S(vv), * Jv = NV_DATA_S(Jvv);
+
+  solveJacobianxVec(t, alpha, work + 1, states, rates, v, Jv);
+
+  return 0;
+}
+
 int consistent_solve_step(N_Vector params, N_Vector resids, void* udata)
 {
   int ret;
@@ -255,6 +265,7 @@ int main(int argc, char** argv)
     IDASStolerances(idaProblem, relTol, absTol);
     IDASpgmr(idaProblem, 0);
     IDASetStopTime(idaProblem, tEnd);
+    IDASpilsSetJacTimesVecFn(idaProblem, compute_jacobian);
 
     // TODO: IDARootInit for piecewise changes...
 

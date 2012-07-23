@@ -608,15 +608,22 @@ putModelResiduals vmap@(VariableMap { vmapMap = m }) model problem (constVars, v
 putModelJacobian vmap@(VariableMap { vmapNConsts = nconsts, vmapMap = m }) model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
   forM_ (zip [0..] eqnVary) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), AssertionContext ctx)) -> do
     cgAppend . LBS.pack $ "Jv[" ++ show i ++ "] = "
-    forM_ (zip [0..] $ filter (\(v, d, iv) -> d == 0 && not iv) $ S.toList varVars) $ \(j, (v, d, _)) -> do
+    let needDerivs = S.map (\(v, d, _) -> v) ((S.filter (\(v, d, iv) -> not iv) varVars) `S.union`
+                                              (S.filter (\(v, d, iv) -> not iv && d > 0) constVars))
+    forM_ (zip [0..] (S.toList needDerivs)) $ \(j, v) -> do
       ex <- either fail return . runIdentity . runErrorT $
-            (repeatedlySimplify ctx) =<< (takePartialDerivativeEx ctx (v,d)
+            (repeatedlySimplify ctx) =<< (takePartialDerivativeEx ctx (v,0)
+                                          (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b]))
+      ex' <- either fail return . runIdentity . runErrorT $
+            (repeatedlySimplify ctx) =<< (takePartialDerivativeEx ctx (v,1)
                                           (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b]))
       when (j /= 0) $ cgAppend " + "
-      let Just (_, Just jVar) = M.lookup (v, d) m
-      cgAppend . LBS.pack $ "v[" ++ show (jVar - 1 - nconsts) ++ "] * ("
+      let Just (_, Just jVar) = M.lookup (v, 0) m
+      cgAppend . LBS.pack $ "v[" ++ show (jVar - 1 - nconsts) ++ "] * (("
       putExpression TimeVaryingEvaluation vmap ctx ex
-      cgAppend ")"
+      cgAppend ") + alpha * ("
+      putExpression TimeVaryingEvaluation vmap ctx ex'
+      cgAppend "))"
     cgAppend ";\n"
   let needsCopy x
         | Just (Just _, Just _) <- mx = True
@@ -1655,6 +1662,7 @@ daeBoilerplateCode =
   "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES);\n\
   \int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* residuals);\n\
   \int paramsToState(double* params, double* STATES, double* RATES);\n\
+  \void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* v, double* Jv);\n\
   \#include \"cellml12-solver-protocol.h\"\n"
 daeInitialPrefix = "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES)\n{\n"
 daeInitialSuffix = "}\n"
@@ -1663,5 +1671,5 @@ daeResidualSuffix = "}\n"
 paramToStatePrefix = "int paramsToState(double* params, double* STATES, double* RATES)\n{\n"
 paramToStateSuffix = "  return 0;\n}\n"
 
-daeJacobianPrefix = "void solveJacobianxVec(double t, double* CONSTANTS, double* STATES, double* RATES, double* v, double* Jv)\n{\n"
+daeJacobianPrefix = "void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* v, double* Jv)\n{\n"
 daeJacobianSuffix = "}\n"
