@@ -35,6 +35,7 @@ import Data.Serialize.IEEE754
 import Data.Generics
 import Prelude hiding ((!!))
 import Data.CellML12.SystemDecomposer
+import qualified Debug.Trace
 
 data DAEIntegrationSetup = DAEIntegrationSetup {
     daeModel :: SimplifiedModel,
@@ -46,24 +47,24 @@ data DAEIntegrationProblem = DAEIntegrationProblem {
     daeBVarRange :: (Double, Double),
     daeRelativeTolerance :: Double,
     daeAbsoluteTolerance :: Double
-  }
+  } deriving (Eq, Ord, Show)
 
 data DAEIntegrationResult = DAEIntegrationResults {
   daeResultIndices :: M.Map (VariableID, Int) Int,
   daeResults :: [(Double, U.UArray Int Double)]
-                                                  }
+                                                  } deriving (Eq, Ord, Show)
 data EvaluationPoint = 
   -- | Evaluate using variables available prior to constant evaluation.
   ConstantEvaluation |
   -- | Evaluate using 'time' varying variables.
   -- | Note: 'time' refers to the independent variable over which the problem is
   -- | being integrated, which might not actually be time.
-  TimeVaryingEvaluation
+  TimeVaryingEvaluation deriving (Eq, Ord, Show)
 
 data VariableMap = VariableMap { vmapMap :: M.Map (VariableID, Int) (Maybe Int, Maybe Int),
                                  vmapNConsts :: Int,
                                  vmapNVars :: Int
-                               }
+                               } deriving (Eq, Ord, Show)
 
 -- | A classification of a model into a set of time-varying variables, non-time-varying variables,
 -- | equations to solve the non-time-varying system, equations to solve the time-varying system,
@@ -72,8 +73,8 @@ type ModelClassification = (S.Set (VariableID, Int, Bool),
                             S.Set (VariableID, Int, Bool),
                             [[Assertion]], [Assertion], [Assertion], [Assertion])
 
-
 data NumericalEntry = NumericalError String | NumericalSuccess | NumericalData (U.UArray Int Double)
+                                                                 deriving (Eq, Ord, Show)
 
 class Monad m => MonadSolver m where
   liftSolver :: Monad m2 => SolverT m2 a -> m a
@@ -170,7 +171,7 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $ do
       c@(constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) <- classifyVariablesAndAssertions setup mSimp2
       when (any (\(_, _, isIV) -> isIV) . S.toList $ varVars) $
         fail "Model contains initial values that can't be computed independently of time"
-      let vmap = assignIndicesToVariables setup mUnits constVars varVars
+      let vmap = assignIndicesToVariables setup mSimp2 constVars varVars
       code <- ErrorT (return (writeDAECode vmap mSimp2 setup c))
       liftIO $ daeWithGenCode setup code
       withSystemTempDirectory' "daesolveXXX" $ \fn -> do
@@ -380,10 +381,10 @@ assignIndicesToVariables setup m constVars varVars =
     -- Every state corresponding to a rate becomes a variable...
     varsPair = (S.map (\(a, b) -> (a, b - 1)) . S.filter (\(_, b) -> b > 0) $ varsPair' `S.union` constVarsExcludingIVs)
                `S.union` varsPair'
-    nVars = S.size (S.filter (\(_, v, _) -> v == 1) varVars)
-    varsRates = M.fromList $ (zip (S.toList varsPair) [(Nothing, Just i) | i <- [(nConsts + 1)..(nConsts + nVars)]]) ++
-                             (zip (S.toList $ S.map (\(a, b) -> (a, b + 1)) varsPair)
-                                  [(Nothing, Just i) | i <- [(nConsts + nVars + 1)..(nConsts + nVars * 2)]])
+    nVars = S.size . S.map fst $ varsPair
+    varsRates = (M.fromList (zip (S.toList varsPair) [(Nothing, Just i) | i <- [(nConsts + 1)..(nConsts + nVars)]])) `M.union`
+                (M.fromList (zip (S.toList $ S.map (\(a, b) -> (a, b + 1)) varsPair)
+                                 [(Nothing, Just i) | i <- [(nConsts + nVars + 1)..(nConsts + nVars * 2)]]))
   in
    VariableMap { vmapMap = M.unionWith (\(a1, b1) (a2, b2) -> (a1 `mplus` a2, b2 `mplus` b1)) otherVars varsRates,
                  vmapNConsts = nConsts, vmapNVars = nVars }
@@ -539,7 +540,7 @@ solveSystem ep vmap known eqns = do
   let newVars = allVars `S.difference` known
   let copyParams =
         forM_ (zip [0..] (S.toList newVars)) $ \(param, (v, deg, iv)) -> do
-          vName <- maybe (fail "Variable in equation not in variable map") return $
+          vName <- maybe (fail $ "Variable " ++ show (v, deg) ++ " in equation not in variable map " ++ (show vmap)) return $
                      getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg)
           cgAppend (LBS.pack vName)
           cgAppend " = params["
@@ -591,7 +592,7 @@ putModelResiduals vmap@(VariableMap { vmapMap = m }) model problem (constVars, v
     \(i, (v, deg, _)) -> do
       cgAppend "residuals["
       cgAppend . LBS.pack . show $ i
-      cgAppend "] = ("      
+      cgAppend "] = ("
       cgAppend . LBS.pack . fromJust $ getVariableString TimeVaryingEvaluation vmap (v, deg)
       cgAppend ") - ("
       cgAppend . LBS.pack . fromJust $ getVariableString ConstantEvaluation vmap (v, deg)
