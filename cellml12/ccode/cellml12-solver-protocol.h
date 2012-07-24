@@ -104,10 +104,12 @@ double* DoSolve(struct ArrayBundle* b, size_t n, int (*f)(void*,double*,double*)
   int flag;
   double* paramArray;
   struct KSData s;
+  int i;
 
   paramArray = malloc(sizeof(double)*n);
+  for (i = 0; i < n; i++)
+    paramArray[i] = 1.0;
   params = N_VMake_Serial(n, paramArray);
-  memset(NV_DATA_S(params), 0, sizeof(double) * n);
 
   s.ksBundle = b;
   s.ksf = f;
@@ -120,6 +122,7 @@ double* DoSolve(struct ArrayBundle* b, size_t n, int (*f)(void*,double*,double*)
   
   ones = N_VNew_Serial(n);
   N_VConst(1.0, ones);
+  KINSetMaxNewtonStep(solver, 1E20);
   flag = KINSol(solver, params, KIN_LINESEARCH, ones, ones);
   N_VDestroy(ones);
 
@@ -195,6 +198,7 @@ int ensure_consistent_at(double t, double* work)
 
   ones = N_VNew_Serial(NRESIDINITVARS);
   N_VConst(1.0, ones);
+  KINSetMaxNewtonStep(solver, 1E20);
   flag = KINSol(solver, params, KIN_LINESEARCH, ones, ones);
   paramsToState(NV_DATA_S(params), work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS);
 
@@ -216,10 +220,21 @@ int ensure_consistent_at(double t, double* work)
   return flag;
 }
 
+int
+ida_root_func(double t, N_Vector y, N_Vector yp, double* gout, void* user_data)
+{
+  double * work = user_data, * states = NV_DATA_S(y), * rates = NV_DATA_S(yp);
+  
+  getEventRoots(t, work + 1, states, rates, gout);
+  return 0;
+}
+
 int main(int argc, char** argv)
 {
   double* work = malloc(sizeof(double) * NWORK);
   memset(work, 0, sizeof(double) * NWORK);
+
+  /* sleep(10); */
 
   while (1)
   {
@@ -273,7 +288,7 @@ int main(int argc, char** argv)
     tActual = tStart;
     while (1)
     {
-      if (solret != IDA_SUCCESS && solret != IDA_TSTOP_RETURN)
+      if (solret != IDA_SUCCESS && solret != IDA_TSTOP_RETURN && solret != IDA_ROOT_RETURN)
         break;
 
       /* Send NumericalData */
@@ -287,6 +302,9 @@ int main(int argc, char** argv)
         wasSuccess = 1;
         break;
       }
+
+      if (NROOTS > 0)
+        IDARootInit(idaProblem, NROOTS, ida_root_func);
 
       solret = IDASolve(idaProblem, tEnd, &tActual, yvec, ypvec, IDA_ONE_STEP);
     }

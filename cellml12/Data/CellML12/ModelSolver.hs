@@ -88,6 +88,11 @@ instance Monad CodeGen where
                                     Right (a', b', c', x) -> (runCodeGen $ cg2 x) (a', b', c')
                                     Left e -> Left e)
   fail e = CodeGen (const $ Left e)
+instance Functor CodeGen where
+  fmap a b = liftM a b
+instance Applicative CodeGen where
+  pure a = return a
+  a <*> b = a >>= flip liftM b
 
 cgAllocateIndex :: CodeGen Int
 cgAllocateIndex = CodeGen $ \(s1, s2, idx) -> Right (s1, s2, idx + 1, idx)
@@ -176,7 +181,7 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $ do
       liftIO $ daeWithGenCode setup code
       withSystemTempDirectory' "daesolveXXX" $ \fn -> do
         liftIO $ LBS.writeFile (fn </> "solve.c") code
-        ec <- liftIO $ system $ showString "gcc -ggdb -O0 -Wall " . showString (fn </> "solve.c") . showString " -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lblas -llapack " . showString " -o " $ fn </> "solve"
+        ec <- liftIO $ system $ showString "gcc -ggdb -O0 -Wall " . showString (fn </> "solve.c") . showString " -lm -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lblas -llapack " . showString " -o " $ fn </> "solve"
         if ec /= ExitSuccess then fail "Cannot find C compiler" else do
         (Just i, Just o, _, p) <-
           liftIO $ createProcess $
@@ -464,16 +469,20 @@ writeDAECode :: VariableMap -> SimplifiedModel -> DAEIntegrationSetup -> ModelCl
 writeDAECode vmap model problem classification =
   let
     (nresidInit, residInitialisation) = dofsAffectingInitialResidual vmap classification
+    roots = findEventRoots model problem classification
+    nroots = length roots
     lenDefines = LBS.pack ((showString "#define NCONSTS " . shows (vmapNConsts vmap) . showString"\n#define NVARS " .
-                            shows (vmapNVars vmap) . showString "\n#define NRESIDINITVARS " . shows nresidInit) "\n")
+                            shows (vmapNVars vmap) . showString "\n#define NRESIDINITVARS " . shows nresidInit . showString "\n#define NROOTS " . shows nroots) "\n")
     ret =
       flip runCodeGen ("", "", 0) $ do
+        resids <- modelAsResiduals classification
+        
         cgAppend daeInitialPrefix
         putModelSolveConsts vmap model problem classification
         cgAppend daeInitialSuffix
         
         cgAppend daeResidualPrefix
-        putModelResiduals vmap model problem classification
+        putModelResiduals vmap resids classification
         cgAppend daeResidualSuffix
         
         cgAppend paramToStatePrefix
@@ -481,8 +490,13 @@ writeDAECode vmap model problem classification =
         cgAppend paramToStateSuffix
         
         cgAppend daeJacobianPrefix
-        putModelJacobian vmap model problem classification
+        putModelJacobian vmap resids classification
         cgAppend daeJacobianSuffix
+        
+        cgAppend daeEventRootsPrefix
+        putEventRoots vmap roots
+        cgAppend daeEventRootsSuffix
+        
         -- To do: uncertain starting parameters.
   in
    case ret of
@@ -577,12 +591,26 @@ checkInequality ep vmap (Assertion (ieq, AssertionContext ctx)) = do
   putExpression ep vmap ctx (stripSemCom ieq)
   cgAppend ")) return 1;\n"
 
-putModelResiduals vmap@(VariableMap { vmapMap = m }) model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
-  forM_ (zip [0..] eqnVary) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), AssertionContext ctx)) -> do
+modelAsResiduals :: (Monad m, Applicative m) => ModelClassification -> m [Assertion]
+modelAsResiduals (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) =
+  mapM makeResidual eqnVary
+    
+makeResidual :: (Monad m, Applicative m) => Assertion -> m Assertion
+makeResidual (Assertion (ex, AssertionContext ctx)) = Assertion <$> ((,) <$> (noSemCom <$> makeResidual' ctx (stripSemCom ex)) <*> (return $ AssertionContext ctx))
+
+makeResidual' ctx (Apply op operands)
+  | opIs "relation1" "eq" op,
+    (op1:op2:_) <- operands =
+    return $ Apply (noSemCom $ Csymbol (Just "arith1") "minus") [op1, op2]
+  | otherwise = Apply op <$> mapM (\v -> noSemCom <$> makeResidual' ctx (stripSemCom v)) operands
+makeResidual' _ ex = fail $ "Invalid top-level expression (not an apply): " ++ show ex
+
+putModelResiduals vmap@(VariableMap { vmapMap = m }) resids (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
+  forM_ (zip [0..] resids) $ \(i, Assertion (ex, AssertionContext ctx)) -> do
     cgAppend "residuals["
     cgAppend . LBS.pack . show $ i
     cgAppend "] = "
-    putExpression TimeVaryingEvaluation vmap ctx (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b])
+    putExpression TimeVaryingEvaluation vmap ctx (stripSemCom ex)
     cgAppend ";\n"
   let needsCopy x
         | Just (Just _, Just _) <- mx = True
@@ -605,24 +633,22 @@ putModelResiduals vmap@(VariableMap { vmapMap = m }) model problem (constVars, v
         putExpression TimeVaryingEvaluation vmap ctx (stripSemCom ieq)
       cgAppend ")) ? 0 : 1;\n"
 
-putModelJacobian vmap@(VariableMap { vmapNConsts = nconsts, vmapMap = m }) model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
-  forM_ (zip [0..] eqnVary) $ \(i, Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), AssertionContext ctx)) -> do
+putModelJacobian vmap@(VariableMap { vmapNConsts = nconsts, vmapMap = m }) resids (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
+  forM_ (zip [0..] resids) $ \(i, Assertion (ex, AssertionContext ctx)) -> do
     cgAppend . LBS.pack $ "Jv[" ++ show i ++ "] = "
     let needDerivs = S.map (\(v, d, _) -> v) ((S.filter (\(v, d, iv) -> not iv) varVars) `S.union`
                                               (S.filter (\(v, d, iv) -> not iv && d > 0) constVars))
     forM_ (zip [0..] (S.toList needDerivs)) $ \(j, v) -> do
-      ex <- either fail return . runIdentity . runErrorT $
-            (repeatedlySimplify ctx) =<< (takePartialDerivativeEx ctx (v,0)
-                                          (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b]))
       ex' <- either fail return . runIdentity . runErrorT $
-            (repeatedlySimplify ctx) =<< (takePartialDerivativeEx ctx (v,1)
-                                          (Apply (noSemCom (Csymbol (Just "arith1") "minus")) [a, b]))
+            (repeatedlySimplify ctx) =<< (takePartialDerivativeEx ctx (v,0) (stripSemCom ex))
+      ex'' <- either fail return . runIdentity . runErrorT $
+            (repeatedlySimplify ctx) =<< (takePartialDerivativeEx ctx (v,1) (stripSemCom ex))
       when (j /= 0) $ cgAppend " + "
       let Just (_, Just jVar) = M.lookup (v, 0) m
       cgAppend . LBS.pack $ "v[" ++ show (jVar - 1 - nconsts) ++ "] * (("
-      putExpression TimeVaryingEvaluation vmap ctx ex
-      cgAppend ") + alpha * ("
       putExpression TimeVaryingEvaluation vmap ctx ex'
+      cgAppend ") + alpha * ("
+      putExpression TimeVaryingEvaluation vmap ctx ex''
       cgAppend "))"
     cgAppend ";\n"
   let needsCopy x
@@ -633,8 +659,59 @@ putModelJacobian vmap@(VariableMap { vmapNConsts = nconsts, vmapMap = m }) model
     \(i, (v, d, _)) -> do
       cgAppend . LBS.pack $ "Jv[" ++ show i ++ "] = "
       case M.lookup (v, d) m of
-        Just (_, Just jVar) -> cgAppend . LBS.pack $ "v[" ++ show jVar ++ "];\n"
+        Just (_, Just jVar) -> do
+          when (d /= 0) (cgAppend "alpha * ")
+          cgAppend "1;\n"
         _ -> cgAppend "0;\n"
+
+
+findEventRoots model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) =
+  flip concatMap eqnVary $ \(Assertion (ex, AssertionContext m)) ->
+    let piecewiseConds = [stripSemCom cond |
+                          Apply opPw operandsPw <- universeBi ex,
+                          opIs "piece1" "piecewise" opPw,
+                          Apply opP [val, cond] <- map stripSemCom operandsPw,
+                          opIs "piece1" "piece" opP]
+    in
+     concatMap (tryMakeRootsFromCondition m) piecewiseConds
+
+tryMakeRootsFromCondition m (Apply op operands)
+  | opIs "relation1" "eq" op,
+    op1:_ <- operands =
+      if isBooleanExpression m (stripSemCom op1)
+        then concatMap (tryMakeRootsFromCondition m . stripSemCom) operands
+        else map (\(o1,o2) -> Assertion (noSemCom $
+                   Apply (noSemCom (Csymbol (Just "arith1") "minus"))
+                                     [o1,o2], AssertionContext m))
+                 (zip operands (tail operands))
+  | Csymbol (Just "relation1") _ <- stripSemCom op =
+     map (\(o1,o2) -> Assertion (noSemCom $
+                        Apply (noSemCom (Csymbol (Just "arith1") "minus"))
+                          [o1,o2],
+                        AssertionContext m)
+         ) (zip operands (tail operands))
+  | Csymbol (Just "logic1") _ <- stripSemCom op =
+       concatMap (tryMakeRootsFromCondition m . stripSemCom) operands
+tryMakeRootsFromCondition _ _ = []
+
+isBooleanExpression _ (Csymbol (Just "logic1") _) = True
+isBooleanExpression m (ASTCi (Ci str))
+  | Just (tn, _, _) <- M.lookup str m,
+    tn == "boolean" = True
+  | otherwise = False
+isBooleanExpression m (Apply op operands)
+  | opIs "relation1" "eq" op = all (isBooleanExpression m . stripSemCom) operands
+  | Csymbol (Just "logic1") _ <- stripSemCom op = True
+  | Csymbol (Just "relation1") _ <- stripSemCom op = True
+isBooleanExpression _ _ = False
+
+putEventRoots vmap@(VariableMap { vmapNConsts = nconsts, vmapMap = m }) roots = do
+  forM_ (zip [0..] roots) $ \(i, Assertion (root, (AssertionContext ctx))) -> do
+    cgAppend "roots["
+    cgAppend . LBS.pack . show $ i
+    cgAppend "] = "
+    putExpression TimeVaryingEvaluation vmap ctx (stripSemCom root)
+    cgAppend ";\n"
 
 repeatedlySimplify :: (Monad m, Functor m) => M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> AST -> ErrorT String m AST
 repeatedlySimplify m ex = fst <$> (flip (untilM (return . snd)) (ex, False) $ \(x, _) -> do
@@ -1663,6 +1740,7 @@ daeBoilerplateCode =
   \int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* residuals);\n\
   \int paramsToState(double* params, double* STATES, double* RATES);\n\
   \void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* v, double* Jv);\n\
+  \void getEventRoots(double t, double* CONSTANTS, double* STATES, double* RATES, double* roots);\n\
   \#include \"cellml12-solver-protocol.h\"\n"
 daeInitialPrefix = "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES)\n{\n"
 daeInitialSuffix = "}\n"
@@ -1673,3 +1751,6 @@ paramToStateSuffix = "  return 0;\n}\n"
 
 daeJacobianPrefix = "void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* v, double* Jv)\n{\n"
 daeJacobianSuffix = "}\n"
+
+daeEventRootsPrefix = "void getEventRoots(double t, double* CONSTANTS, double* STATES, double* RATES, double* roots)\n{\n"
+daeEventRootsSuffix = "}\n"
