@@ -1,0 +1,23 @@
+<model name="exp" xmlns="http://www.cellml.org/cellml/1.2#" xmlns:m="http://www.w3.org/1998/Math/MathML">
+  <component name="main">
+    <variable name="time" units="dimensionless" type="real" />
+    <variable name="x" units="dimensionless" type="real" />
+    <m:math>
+      <m:apply><m:eq/>
+        <m:apply><m:csymbol cd="cellml1">evaluatedAt</m:csymbol>
+          <m:ci>time</m:ci><m:cn>0</m:cn>
+          <m:ci>x</m:ci>
+        </m:apply>
+        <m:cn>1</m:cn>
+      </m:apply>
+
+      <m:apply><m:eq/>
+        <m:apply><m:diff/>
+          <m:bvar><m:ci>time</m:ci></m:bvar>
+          <m:ci>x</m:ci>
+        </m:apply>
+        <m:apply><m:root/><m:ci>x</m:ci></m:apply>
+      </m:apply>
+    </m:math>
+  </component>
+</model>

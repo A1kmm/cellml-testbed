@@ -1,0 +1,209 @@
+<cellml:model name="NFATCycling" cmeta:id="NFATCycling" xmlns="http://www.cellml.org/cellml/1.1#" xmlns:cmeta="http://www.cellml.org/metadata/1.0#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:bqs="http://www.cellml.org/bqs/1.0#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:vCard="http://www.w3.org/2001/vcard-rdf/3.0#" xmlns:ns0="http://www.cellml.org/cellml/1.0#" xmlns:ns1="http://www.w3.org/1998/Math/MathML" xmlns:cellml="http://www.cellml.org/cellml/1.2#" xmlns:ns2="http://www.w3.org/2000/xmlns/">
+    
+<rdf:RDF>
+    <rdf:Description rdf:about="#NFATCycling">
+        <dc:creator rdf:parseType="Resource">
+            <vCard:N rdf:parseType="Resource">
+                <vCard:Family>Cooling</vCard:Family>
+                <vCard:Given>Michael</vCard:Given>
+            </vCard:N>
+            <vCard:EMAIL rdf:parseType="Resource">
+                <rdf:value>m.cooling@auckland.ac.nz</rdf:value>
+                <rdf:type rdf:resource="http://imc.org/vCard/3.0#internet"/>
+            </vCard:EMAIL>
+        </dc:creator>
+
+        <dc:title>Cooling's NFAT Cycling module for the Dual calcium protocol</dc:title>
+    </rdf:Description>
+</rdf:RDF> 
+<!--
+*******************************************************
+***         U   N   I   T   S                       ***
+*******************************************************
+-->
+   <cellml:units name="s">
+      <cellml:unit units="second"/>
+   </cellml:units>
+   
+   <cellml:units name="nM">
+         <cellml:unit units="mole" prefix="nano"/>
+         <cellml:unit units="liter" exponent="-1"/>
+      </cellml:units>
+      <cellml:units name="per_s">
+         <cellml:unit units="s" exponent="-1"/>
+      </cellml:units>
+      <cellml:units name="nM_per_s">
+         <cellml:unit units="nM"/>
+         <cellml:unit units="s" exponent="-1"/>
+      </cellml:units>
+    <cellml:units name="per_nM_s">
+       <cellml:unit units="nM" exponent="-1"/>
+       <cellml:unit units="s" exponent="-1"/>
+    </cellml:units>
+<!--
+*********************************************************
+***       C   O   M   P   O   N   E   N   T   S       ***
+*********************************************************
+-->
+  <cellml:component name="NFAT_Cycling">
+          <cellml:variable name="t" units="s" public_interface="yes" type="real"/>
+          
+          <cellml:variable name="NFATN_c" units="nM" type="real"/>
+          <cellml:variable name="NFATN_n" units="nM" public_interface="yes" type="real"/>
+          <cellml:variable name="NFATp_c" units="nM" type="real"/>
+          <cellml:variable name="NFATp_n" units="nM" public_interface="yes" type="real"/>
+           
+          <cellml:variable name="Ccn" units="dimensionless" private_interface="yes" type="real"/> 
+          <cellml:variable name="Ntot" units="nM" public_interface="yes" type="real"/>
+          <cellml:variable name="act_N" units="dimensionless" private_interface="yes" type="real"/>
+          
+          <cellml:variable name="k_f1" units="per_nM_s" type="real"/>
+          <cellml:variable name="k_r1" units="per_s" type="real"/>
+          <cellml:variable name="k_f2" units="per_s" type="real"/>
+          <cellml:variable name="k_f3" units="per_s" type="real"/>
+          <cellml:variable name="k_r3" units="per_nM_s" type="real"/>
+          <cellml:variable name="k_f4" units="per_s" type="real"/>
+    
+          <cellml:variable name="J1" units="nM_per_s" type="real"/>
+          <cellml:variable name="J2" units="nM_per_s" type="real"/>
+          <cellml:variable name="J3" units="nM_per_s" type="real"/>
+          <cellml:variable name="J4" units="nM_per_s" type="real"/>
+     <ns1:math>
+        <ns1:apply>
+                 <ns1:eq/>
+                 <ns1:ci>J1</ns1:ci>
+                 <ns1:apply>
+                    <ns1:minus/>
+                    <ns1:apply>
+                       <ns1:times/>
+                       <ns1:ci>k_f1</ns1:ci>
+                       <ns1:ci>NFATp_c</ns1:ci>
+                       <ns1:ci>Ntot</ns1:ci>
+                       <ns1:ci>act_N</ns1:ci>
+                    </ns1:apply>
+                    <ns1:apply>
+                       <ns1:times/>
+                       <ns1:ci>k_r1</ns1:ci>
+                       <ns1:ci>NFATN_c</ns1:ci>
+                       <ns1:apply>
+                          <ns1:minus/>
+                          <ns1:cn cellml:units="dimensionless">1</ns1:cn>
+                          <ns1:ci>act_N</ns1:ci>
+                       </ns1:apply>
+                    </ns1:apply>
+                 </ns1:apply>
+              </ns1:apply>
+              <ns1:apply>
+                 <ns1:eq/>
+                 <ns1:ci>J2</ns1:ci>
+                 <ns1:apply>
+                    <ns1:times/>
+                    <ns1:ci>k_f2</ns1:ci>
+                    <ns1:ci>NFATN_c</ns1:ci>
+                 </ns1:apply>
+              </ns1:apply>
+              <ns1:apply>
+                 <ns1:eq/>
+                 <ns1:ci>J3</ns1:ci>
+                 <ns1:apply>
+                    <ns1:minus/>
+                    <ns1:apply>
+                       <ns1:times/>
+                       <ns1:ci>k_f3</ns1:ci>
+                       <ns1:ci>NFATN_n</ns1:ci>
+                       <ns1:apply>
+                          <ns1:minus/>
+                          <ns1:cn cellml:units="dimensionless">1</ns1:cn>
+                          <ns1:ci>act_N</ns1:ci>
+                       </ns1:apply>
+                    </ns1:apply>
+                    <ns1:apply>
+                       <ns1:times/>
+                       <ns1:ci>k_r3</ns1:ci>
+                       <ns1:ci>NFATp_n</ns1:ci>
+                       <ns1:ci>Ntot</ns1:ci>
+                       <ns1:ci>act_N</ns1:ci>
+                    </ns1:apply>
+                 </ns1:apply>
+              </ns1:apply>
+              <ns1:apply>
+                 <ns1:eq/>
+                 <ns1:ci>J4</ns1:ci>
+                 <ns1:apply>
+                    <ns1:times/>
+                    <ns1:ci>k_f4</ns1:ci>
+                    <ns1:ci>NFATp_n</ns1:ci>
+                 </ns1:apply>
+              </ns1:apply>
+              <ns1:apply>
+                 <ns1:eq/>
+                 <ns1:apply>
+                    <ns1:diff/>
+                    <ns1:bvar>
+                       <ns1:ci>t</ns1:ci>
+                    </ns1:bvar>
+                    <ns1:ci>NFATp_c</ns1:ci>
+                 </ns1:apply>
+                 <ns1:apply>
+                    <ns1:minus/>
+                    <ns1:apply>
+                       <ns1:divide/>
+                       <ns1:ci>J4</ns1:ci>
+                       <ns1:ci>Ccn</ns1:ci>
+                    </ns1:apply>
+                    <ns1:ci>J1</ns1:ci>
+                 </ns1:apply>
+              </ns1:apply>
+              <ns1:apply>
+                 <ns1:eq/>
+                 <ns1:apply>
+                    <ns1:diff/>
+                    <ns1:bvar>
+                       <ns1:ci>t</ns1:ci>
+                    </ns1:bvar>
+                    <ns1:ci>NFATN_c</ns1:ci>
+                 </ns1:apply>
+                 <ns1:apply>
+                    <ns1:minus/>
+                    <ns1:ci>J1</ns1:ci>
+                    <ns1:ci>J2</ns1:ci>
+                 </ns1:apply>
+              </ns1:apply>
+              <ns1:apply>
+                 <ns1:eq/>
+                 <ns1:apply>
+                    <ns1:diff/>
+                    <ns1:bvar>
+                       <ns1:ci>t</ns1:ci>
+                    </ns1:bvar>
+                    <ns1:ci>NFATN_n</ns1:ci>
+                 </ns1:apply>
+                 <ns1:apply>
+                    <ns1:minus/>
+                    <ns1:apply>
+                       <ns1:times/>
+                       <ns1:ci>J2</ns1:ci>
+                       <ns1:ci>Ccn</ns1:ci>
+                    </ns1:apply>
+                    <ns1:ci>J3</ns1:ci>
+                 </ns1:apply>
+              </ns1:apply>
+              <ns1:apply>
+                 <ns1:eq/>
+                 <ns1:apply>
+                    <ns1:diff/>
+                    <ns1:bvar>
+                       <ns1:ci>t</ns1:ci>
+                    </ns1:bvar>
+                    <ns1:ci>NFATp_n</ns1:ci>
+                 </ns1:apply>
+                 <ns1:apply>
+                    <ns1:minus/>
+                    <ns1:ci>J3</ns1:ci>
+                    <ns1:ci>J4</ns1:ci>
+                 </ns1:apply>
+          </ns1:apply>
+     </ns1:math>
+    <ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>NFATN_c</ns1:ci></ns1:apply><ns1:cn cellml:units="nM">0.0017047397999999999</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>NFATN_n</ns1:ci></ns1:apply><ns1:cn cellml:units="nM">0.50910553</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>NFATp_c</ns1:ci></ns1:apply><ns1:cn cellml:units="nM">0.9825855442</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>NFATp_n</ns1:ci></ns1:apply><ns1:cn cellml:units="nM">0.27638027000000004</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>k_f1</ns1:ci></ns1:apply><ns1:cn cellml:units="per_nM_s">0.000007689339999999999</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>k_r1</ns1:ci></ns1:apply><ns1:cn cellml:units="per_s">0.019256000000000002</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>k_f2</ns1:ci></ns1:apply><ns1:cn cellml:units="per_s">0.0014419200000000002</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>k_f3</ns1:ci></ns1:apply><ns1:cn cellml:units="per_s">0.000361944</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>k_r3</ns1:ci></ns1:apply><ns1:cn cellml:units="per_nM_s">0.0000470813</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>k_f4</ns1:ci></ns1:apply><ns1:cn cellml:units="per_s">0.000444695</ns1:cn></ns1:apply></ns1:math></cellml:component>
+
+</cellml:model>

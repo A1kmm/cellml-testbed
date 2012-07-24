@@ -1,0 +1,207 @@
+<cellml:model name="calcium" cmeta:id="calcium" xmlns="http://www.cellml.org/cellml/1.1#" xmlns:cmeta="http://www.cellml.org/metadata/1.0#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:bqs="http://www.cellml.org/bqs/1.0#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:vCard="http://www.w3.org/2001/vcard-rdf/3.0#" xmlns:ns0="http://www.cellml.org/cellml/1.0#" xmlns:ns1="http://www.w3.org/1998/Math/MathML" xmlns:cellml="http://www.cellml.org/cellml/1.2#" xmlns:ns2="http://www.w3.org/2000/xmlns/">
+    
+<rdf:RDF>
+    <rdf:Description rdf:about="#calcium">
+        <dc:creator rdf:parseType="Resource">
+            <vCard:N rdf:parseType="Resource">
+                <vCard:Family>Cooling</vCard:Family>
+                <vCard:Given>Michael</vCard:Given>
+            </vCard:N>
+            <vCard:EMAIL rdf:parseType="Resource">
+                <rdf:value>m.cooling@auckland.ac.nz</rdf:value>
+                <rdf:type rdf:resource="http://imc.org/vCard/3.0#internet"/>
+            </vCard:EMAIL>
+        </dc:creator>
+
+        <dc:title>Cooling's calcium module for the Dual calcium protocol</dc:title>
+    </rdf:Description>
+</rdf:RDF> 
+<!--
+*******************************************************
+***         U   N   I   T   S                       ***
+*******************************************************
+-->
+   <cellml:units name="s">
+      <cellml:unit units="second"/>
+   </cellml:units>
+   
+   <cellml:units name="nM">
+         <cellml:unit units="mole" prefix="nano"/>
+         <cellml:unit units="liter" exponent="-1"/>
+      </cellml:units>
+      <cellml:units name="per_s">
+         <cellml:unit units="s" exponent="-1"/>
+      </cellml:units>
+      <cellml:units name="nM_per_s">
+         <cellml:unit units="nM"/>
+         <cellml:unit units="s" exponent="-1"/>
+      </cellml:units>
+      
+         <cellml:units name="ms">
+            <cellml:unit units="s" exponent="-3"/>
+         </cellml:units>
+         <cellml:units name="nM_per_ms">
+            <cellml:unit units="nM"/>
+            <cellml:unit units="ms" exponent="-1"/>
+   </cellml:units>
+      
+<!--
+*********************************************************
+***       C   O   M   P   O   N   E   N   T   S       ***
+*********************************************************
+-->
+ <cellml:component name="calcium">
+             <cellml:variable name="t" units="s" public_interface="yes" type="real"/>
+             <cellml:variable name="Ca" units="nM" public_interface="yes" type="real"/>
+             
+             
+              <cellml:variable name="ms_in_pulse" units="ms" type="real"/>
+              <cellml:variable name="period" units="s" type="real"/>
+              <cellml:variable name="baseline" units="nM" type="real"/>
+              <cellml:variable name="stimGradient" units="nM_per_ms" type="real"/>
+              <cellml:variable name="CaBeat" units="nM" type="real"/>
+              <cellml:variable name="CaSigTrans" units="nM" type="real"/>
+                          
+             <ns1:math>
+             <ns1:apply>
+                      <ns1:eq/>
+                      <ns1:ci>ms_in_pulse</ns1:ci>
+                      <ns1:apply>
+                         <ns1:times/>
+                         <ns1:cn cellml:units="dimensionless">1000</ns1:cn>
+                         <ns1:apply>
+                            <ns1:minus/>
+                            <ns1:ci>t</ns1:ci>
+                            <ns1:apply>
+                               <ns1:times/>
+                               <ns1:apply>
+                                  <ns1:floor/>
+                                  <ns1:apply>
+                                     <ns1:divide/>
+                                     <ns1:ci>t</ns1:ci>
+                                     <ns1:ci>period</ns1:ci>
+                                  </ns1:apply>
+                               </ns1:apply>
+                               <ns1:ci>period</ns1:ci>
+                            </ns1:apply>
+                         </ns1:apply>
+                      </ns1:apply>
+                   </ns1:apply>
+                   <ns1:apply>
+                      <ns1:eq/>
+                      <ns1:ci>baseline</ns1:ci>
+                      <ns1:piecewise>
+                         <ns1:piece>
+                            <ns1:cn cellml:units="nM">93</ns1:cn>
+                            <ns1:apply>
+                               <ns1:geq/>
+                               <ns1:ci>period</ns1:ci>
+                               <ns1:cn cellml:units="s">0.12</ns1:cn>
+                            </ns1:apply>
+                         </ns1:piece>
+                         <ns1:otherwise>
+                            <ns1:apply>
+                               <ns1:plus/>
+                               <ns1:cn cellml:units="nM">1121</ns1:cn>
+                               <ns1:apply>
+                                  <ns1:times/>
+                                  <ns1:apply>
+                                     <ns1:minus/>
+                                     <ns1:apply>
+                                        <ns1:times/>
+                                        <ns1:ci>period</ns1:ci>
+                                        <ns1:cn cellml:units="dimensionless">1000</ns1:cn>
+                                     </ns1:apply>
+                                     <ns1:cn cellml:units="ms">16</ns1:cn>
+                                  </ns1:apply>
+                                  <ns1:apply>
+                                     <ns1:minus/>
+                                     <ns1:cn cellml:units="nM_per_ms">9.8846</ns1:cn>
+                                  </ns1:apply>
+                               </ns1:apply>
+                            </ns1:apply>
+                         </ns1:otherwise>
+                      </ns1:piecewise>
+                   </ns1:apply>
+                   <ns1:apply>
+                      <ns1:eq/>
+                      <ns1:ci>stimGradient</ns1:ci>
+                      <ns1:apply>
+                         <ns1:divide/>
+                         <ns1:apply>
+                            <ns1:minus/>
+                            <ns1:cn cellml:units="nM">1121</ns1:cn>
+                            <ns1:ci>baseline</ns1:ci>
+                         </ns1:apply>
+                         <ns1:cn cellml:units="ms">16</ns1:cn>
+                      </ns1:apply>
+                   </ns1:apply>
+                   <ns1:apply>
+                      <ns1:eq/>
+                      <ns1:ci>CaBeat</ns1:ci>
+                      <ns1:piecewise>
+                         <ns1:piece>
+                            <ns1:apply>
+                               <ns1:plus/>
+                               <ns1:apply>
+                                  <ns1:times/>
+                                  <ns1:ci>ms_in_pulse</ns1:ci>
+                                  <ns1:ci>stimGradient</ns1:ci>
+                               </ns1:apply>
+                               <ns1:ci>baseline</ns1:ci>
+                            </ns1:apply>
+                            <ns1:apply>
+                               <ns1:leq/>
+                               <ns1:ci>ms_in_pulse</ns1:ci>
+                               <ns1:cn cellml:units="ms">16</ns1:cn>
+                            </ns1:apply>
+                         </ns1:piece>
+                         <ns1:piece>
+                            <ns1:apply>
+                               <ns1:plus/>
+                               <ns1:apply>
+                                  <ns1:times/>
+                                  <ns1:apply>
+                                     <ns1:minus/>
+                                     <ns1:ci>ms_in_pulse</ns1:ci>
+                                     <ns1:cn cellml:units="ms">16</ns1:cn>
+                                  </ns1:apply>
+                                  <ns1:apply>
+                                     <ns1:minus/>
+                                     <ns1:cn cellml:units="nM_per_ms">9.8846</ns1:cn>
+                                  </ns1:apply>
+                               </ns1:apply>
+                               <ns1:cn cellml:units="nM">1121</ns1:cn>
+                            </ns1:apply>
+                            <ns1:apply>
+                               <ns1:and/>
+                               <ns1:apply>
+                                  <ns1:gt/>
+                                  <ns1:ci>ms_in_pulse</ns1:ci>
+                                  <ns1:cn cellml:units="ms">16</ns1:cn>
+                               </ns1:apply>
+                               <ns1:apply>
+                                  <ns1:leq/>
+                                  <ns1:ci>ms_in_pulse</ns1:ci>
+                                  <ns1:cn cellml:units="ms">120</ns1:cn>
+                               </ns1:apply>
+                            </ns1:apply>
+                         </ns1:piece>
+                         <ns1:otherwise>
+                            <ns1:ci>baseline</ns1:ci>
+                         </ns1:otherwise>
+                      </ns1:piecewise>
+                   </ns1:apply>
+                   <ns1:apply>
+                      <ns1:eq/>
+                      <ns1:ci>Ca</ns1:ci>
+                      <ns1:apply>
+                         <ns1:plus/>
+                         <ns1:ci>CaBeat</ns1:ci>
+                         <ns1:ci>CaSigTrans</ns1:ci>
+                      </ns1:apply>
+         </ns1:apply>
+             </ns1:math>
+   <ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>period</ns1:ci></ns1:apply><ns1:cn cellml:units="s">1.02</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>CaSigTrans</ns1:ci></ns1:apply><ns1:cn cellml:units="nM">0.0</ns1:cn></ns1:apply></ns1:math></cellml:component>
+
+</cellml:model>

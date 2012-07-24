@@ -1,0 +1,68 @@
+<cellml:model name="parabola" cmeta:id="parabola" xmlns="http://www.cellml.org/cellml/1.1#" xmlns:cmeta="http://www.cellml.org/metadata/1.0#" xmlns:ns0="http://www.w3.org/1998/Math/MathML" xmlns:cellml="http://www.cellml.org/cellml/1.2#">
+
+  <cellml:component name="main" cmeta:id="main">
+    <cellml:variable name="time" units="dimensionless" type="real"/>
+    <cellml:variable name="offset" units="dimensionless" type="real"/>
+    <cellml:variable name="x" units="dimensionless" type="real"/>
+    <cellml:variable name="y" units="dimensionless" type="real"/>
+    <cellml:variable name="z" units="dimensionless" type="real"/>
+    <ns0:math cmeta:id="eq1">
+      <ns0:apply><ns0:eq/>
+        <ns0:apply><ns0:diff/>
+          <ns0:bvar><ns0:ci>time</ns0:ci></ns0:bvar>
+          <ns0:ci>y</ns0:ci>
+        </ns0:apply>
+        <ns0:apply><ns0:times/>
+          <ns0:cn cellml:units="dimensionless">2.0</ns0:cn>
+          <ns0:ci>time</ns0:ci>
+        </ns0:apply>
+      </ns0:apply>
+    </ns0:math>
+    <ns0:math cmeta:id="eq2">
+      <ns0:apply><ns0:eq/>
+        <ns0:ci>x</ns0:ci>
+        <ns0:apply><ns0:plus/>
+          <ns0:apply><ns0:power/>
+            <ns0:ci>time</ns0:ci>
+            <ns0:cn cellml:units="dimensionless">2.0</ns0:cn>
+          </ns0:apply>
+          <ns0:ci>offset</ns0:ci>
+        </ns0:apply>
+      </ns0:apply>
+    </ns0:math>
+    <ns0:math cmeta:id="eq3">
+      <ns0:apply><ns0:eq/>
+        <ns0:ci>z</ns0:ci>
+        <ns0:piecewise>
+          <ns0:piece>
+            <ns0:apply><ns0:sin/><ns0:ci>offset</ns0:ci></ns0:apply>
+            <ns0:apply><ns0:and/>
+              <ns0:apply><ns0:gt/>
+                <ns0:ci>offset</ns0:ci>
+                <ns0:cn cellml:units="dimensionless">1</ns0:cn>
+              </ns0:apply>
+              <ns0:apply><ns0:leq/>
+                <ns0:ci>offset</ns0:ci>
+                <ns0:cn cellml:units="dimensionless">3</ns0:cn>
+              </ns0:apply>
+            </ns0:apply>
+          </ns0:piece>
+          <ns0:piece>
+            <ns0:cn cellml:units="dimensionless">3</ns0:cn>
+            <ns0:apply><ns0:gt/>
+              <ns0:ci>offset</ns0:ci>
+              <ns0:cn cellml:units="dimensionless">3</ns0:cn>
+            </ns0:apply>
+          </ns0:piece>
+          <ns0:otherwise>
+            <ns0:cn cellml:units="dimensionless">1</ns0:cn>
+          </ns0:otherwise>
+        </ns0:piecewise>
+      </ns0:apply>
+    </ns0:math>
+  <ns0:math><ns0:apply><ns0:eq/><ns0:ci>offset</ns0:ci>
+               <ns0:cn cellml:units="dimensionless">3.0</ns0:cn>
+            </ns0:apply>
+  </ns0:math>
+  <ns0:math><ns0:apply><ns0:eq/><ns0:apply><ns0:csymbol cd="cellml1">evaluatedAt</ns0:csymbol><ns0:ci>time</ns0:ci><ns0:cn cellml:units="dimensionless">0.0</ns0:cn><ns0:ci>y</ns0:ci></ns0:apply><ns0:ci>offset</ns0:ci></ns0:apply></ns0:math></cellml:component>
+</cellml:model>

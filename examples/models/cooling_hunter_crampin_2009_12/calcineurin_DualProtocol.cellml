@@ -1,0 +1,89 @@
+<cellml:model name="calcineurin" cmeta:id="calcineurin" xmlns="http://www.cellml.org/cellml/1.1#" xmlns:cmeta="http://www.cellml.org/metadata/1.0#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:bqs="http://www.cellml.org/bqs/1.0#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:vCard="http://www.w3.org/2001/vcard-rdf/3.0#" xmlns:ns0="http://www.cellml.org/cellml/1.0#" xmlns:ns1="http://www.w3.org/1998/Math/MathML" xmlns:cellml="http://www.cellml.org/cellml/1.2#" xmlns:ns2="http://www.w3.org/2000/xmlns/">
+    
+<rdf:RDF>
+    <rdf:Description rdf:about="#calcineurin">
+        <dc:creator rdf:parseType="Resource">
+            <vCard:N rdf:parseType="Resource">
+                <vCard:Family>Cooling</vCard:Family>
+                <vCard:Given>Michael</vCard:Given>
+            </vCard:N>
+            <vCard:EMAIL rdf:parseType="Resource">
+                <rdf:value>m.cooling@auckland.ac.nz</rdf:value>
+                <rdf:type rdf:resource="http://imc.org/vCard/3.0#internet"/>
+            </vCard:EMAIL>
+        </dc:creator>
+
+        <dc:title>Cooling's calcineurin module for the Dual calcium protocol</dc:title>
+    </rdf:Description>
+</rdf:RDF> 
+<!--
+*******************************************************
+***         U   N   I   T   S                       ***
+*******************************************************
+-->
+   <cellml:units name="s">
+      <cellml:unit units="second"/>
+   </cellml:units>
+   
+   <cellml:units name="nM">
+         <cellml:unit units="mole" prefix="nano"/>
+         <cellml:unit units="liter" exponent="-1"/>
+      </cellml:units>
+
+<!--
+*********************************************************
+***       C   O   M   P   O   N   E   N   T   S       ***
+*********************************************************
+-->
+     <cellml:component name="calcineurin">
+         <cellml:variable name="t" units="s" public_interface="yes" type="real"/>
+         <cellml:variable name="Ca" units="nM" public_interface="yes" type="real"/>
+         <cellml:variable name="M" units="nM" type="real"/>
+         <cellml:variable name="Ntot" units="nM" public_interface="yes" type="real"/>
+         <cellml:variable name="K_mN" units="nM" type="real"/>
+         <cellml:variable name="n" units="dimensionless" type="real"/>
+         <cellml:variable name="K_dN" units="nM" type="real"/>
+         <cellml:variable name="act_N" units="dimensionless" public_interface="yes" type="real"/>
+      
+       <ns1:math>
+        <ns1:apply>
+                  <ns1:eq/>
+                  <ns1:ci>act_N</ns1:ci>
+                  <ns1:apply>
+                     <ns1:divide/>
+                     <ns1:apply>
+                        <ns1:power/>
+                        <ns1:ci>Ca</ns1:ci>
+                        <ns1:ci>n</ns1:ci>
+                     </ns1:apply>
+                     <ns1:apply>
+                        <ns1:plus/>
+                        <ns1:apply>
+                           <ns1:power/>
+                           <ns1:ci>Ca</ns1:ci>
+                           <ns1:ci>n</ns1:ci>
+                        </ns1:apply>
+                        <ns1:apply>
+                           <ns1:times/>
+                           <ns1:apply>
+                              <ns1:power/>
+                              <ns1:ci>K_mN</ns1:ci>
+                              <ns1:ci>n</ns1:ci>
+                           </ns1:apply>
+                           <ns1:apply>
+                              <ns1:plus/>
+                              <ns1:cn cellml:units="dimensionless">1</ns1:cn>
+                              <ns1:apply>
+                                 <ns1:divide/>
+                                 <ns1:ci>K_dN</ns1:ci>
+                                 <ns1:ci>M</ns1:ci>
+                              </ns1:apply>
+                           </ns1:apply>
+                        </ns1:apply>
+                     </ns1:apply>
+                  </ns1:apply>
+               </ns1:apply>
+         </ns1:math>
+   <ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>M</ns1:ci></ns1:apply><ns1:cn cellml:units="nM">6000.0</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>Ntot</ns1:ci></ns1:apply><ns1:cn cellml:units="nM">1000.0</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>K_mN</ns1:ci></ns1:apply><ns1:cn cellml:units="nM">535.0</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>n</ns1:ci></ns1:apply><ns1:cn cellml:units="dimensionless">2.92</ns1:cn></ns1:apply></ns1:math><ns1:math><ns1:apply><ns1:eq/><ns1:apply><ns1:csymbol cd="cellml1">evaluatedAt</ns1:csymbol><ns1:ci>t</ns1:ci><ns1:cn cellml:units="second">0.0</ns1:cn><ns1:ci>K_dN</ns1:ci></ns1:apply><ns1:cn cellml:units="nM">1760.0</ns1:cn></ns1:apply></ns1:math></cellml:component>
+
+</cellml:model>
