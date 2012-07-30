@@ -168,7 +168,7 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $ do
   case fixHighers mSimp1 setup of
     Left e -> fail e
     Right mFull -> do
-      let mUnits = substituteUnits mFull
+      mUnits <- substituteBooleanVariables (substituteUnits mFull)
       -- Simplify again after putting units conversions in. We need to do it
       -- twice, because we need to simplify derivative degrees to get the units, but
       -- the units conversions might be able to be simplified out.
@@ -216,7 +216,7 @@ putExpression ep vmap ctx x
     (_, _, var) <-
       maybe (fail $ "Variable " ++ varname ++ " not found but named in ci") return $
         M.lookup varname ctx
-    str <- maybe (fail "Cannot find C name for variable") return $
+    str <- maybe (fail $ "Cannot find C name for variable " ++ varname) return $
              getVariableString (if isIV then TimeVaryingEvaluation else ep) vmap (var, deg)
     cgAppend . LBS.pack $ str
 
@@ -673,7 +673,7 @@ findEventRoots model problem (constVars, varVars, eqnConst, eqnVary, ieqConst, i
                           Apply opP [val, cond] <- map stripSemCom operandsPw,
                           opIs "piece1" "piece" opP]
     in
-     concatMap (tryMakeRootsFromCondition m) piecewiseConds
+     nub . sort . concatMap (tryMakeRootsFromCondition m) $ piecewiseConds
 
 tryMakeRootsFromCondition m (Apply op operands)
   | opIs "relation1" "eq" op,
@@ -1734,6 +1734,90 @@ takePartialDerivativeEx m (wrtv, wrtd) (Apply (WithMaybeSemantics _ (WithCommon 
     if wrtd == 1 && wrtv == v then return (Cn (CnInteger 1)) else return (Cn (CnInteger 0))
 
 takePartialDerivativeEx _ _ ex = fail $ "Don't know how to take a partial derivative of " ++ show ex
+
+partitionByMaybe :: (a -> Maybe b) -> [a] -> ([a], [b])
+partitionByMaybe f l = foldl' (extendOneByMaybe f) ([], []) l
+extendOneByMaybe f (la, lb) v
+  | Just b <- f v = (la, b:lb)
+  | otherwise = (v:la, lb)
+
+substituteBooleanVariables :: (Monad m, Applicative m) => SimplifiedModel -> ErrorT String m SimplifiedModel
+substituteBooleanVariables (sm@(SimplifiedModel { assertions = a })) = do
+  let (asserts, bassigns) = partitionByMaybe extractBooleanAssignment a
+  bmap <- tryBuildBooleanSubstitutionMap (length a) M.empty bassigns (M.fromList bassigns)
+  return $ sm { assertions = flip map asserts $ \(Assertion (assert, ctx)) ->
+                 let (AssertionContext ctx', assert') =
+                       substituteExpressionFixingContext (ctx, stripSemCom assert) bmap 
+                 in
+                  Assertion (noSemCom assert', AssertionContext ctx')
+              }
+
+tryBuildBooleanSubstitutionMap :: (Monad m, Applicative m) => Int -> M.Map VariableID (AssertionContext, AST) -> [(VariableID, (AssertionContext, AST))] -> M.Map VariableID (AssertionContext, AST) -> ErrorT String m (M.Map VariableID (AssertionContext, AST))
+tryBuildBooleanSubstitutionMap d m l om = foldM (tryBuildOneBooleanSubstitutionMap d om) m l
+tryBuildOneBooleanSubstitutionMap :: (Monad m, Applicative m) => Int -> M.Map VariableID (AssertionContext, AST) -> M.Map VariableID (AssertionContext, AST) -> (VariableID, (AssertionContext, AST)) -> ErrorT String m (M.Map VariableID (AssertionContext, AST))
+tryBuildOneBooleanSubstitutionMap d om m (v, cex@(AssertionContext c, ex))
+  | v `M.member` m = return m
+  | otherwise = do
+    when (d <= 0) $ fail $ "Boolean variable cycle involving boolean expression " ++ (show ex) ++
+                           "; the secondary specification requires that boolean variable logic be acyclic."
+    let depl = [ (v, cex') | Ci vname <- universeBi ex,
+                 Just (_, _, v) <- [M.lookup vname c],
+                 Just cex' <- [M.lookup v om]]
+    m' <- tryBuildBooleanSubstitutionMap (d - 1) m depl om
+    return $ M.insert v (substituteExpressionFixingContext cex m') m'
+
+extractBooleanAssignment (Assertion (WithMaybeSemantics _ (WithCommon _ (Apply op [arg1, arg2])), ctx@(AssertionContext m)))
+  | not (opIs "relation1" "eq" op) = Nothing
+  | ASTCi (Ci vname) <- stripSemCom arg1, Just (t, _, v) <- M.lookup vname m, t == "boolean" =
+    Just (v, (ctx, stripSemCom arg2))
+  | ASTCi (Ci vname) <- stripSemCom arg2, Just (t, _, v) <- M.lookup vname m, t == "boolean" =
+    Just (v, (ctx, stripSemCom arg1))
+extractBooleanAssignment _ = Nothing
+
+-- | This code substitutes variables for expressions that may contain variables.
+-- | Because the variables to be substituted may come from a different component, they
+-- | might have different name in the new component, or they might not yet exist at
+-- | all in the new component.
+substituteExpressionFixingContext :: (AssertionContext, AST) -> M.Map VariableID (AssertionContext, AST) -> (AssertionContext, AST)
+substituteExpressionFixingContext (AssertionContext ctx, ex) mExprs = let
+  vToSub = [ v | Ci vname <- universeBi ex,
+             Just (_, _, v) <- [M.lookup vname ctx], 
+             Just _ <- [M.lookup v mExprs] ]
+  (ctx', exForV) = foldl' (\(ctx, subs) v ->
+                            let (ctx', ex') =
+                                  buildExpressionForNewContext mExprs (ctx, subs) v in
+                              (ctx', M.insert v ex' subs))
+                          (ctx, M.empty) vToSub
+  changeMatchingCi (ASTCi (Ci vname))
+    | Just (_, _, v) <- M.lookup vname ctx', 
+      Just ex' <- M.lookup v exForV = ex'
+  changeMatchingCi ex = ex
+  in
+   (AssertionContext ctx',
+    transformBi changeMatchingCi ex)
+
+buildExpressionForNewContext mExprs (ctx, subs) v =
+  let
+    Just (AssertionContext oldCtx, vEx) = M.lookup v mExprs
+    exVars = [ (vname, vd) | Ci vname <- universeBi vEx, Just vd <- [M.lookup vname oldCtx] ]
+    (ctx', oldToNew) = foldl' ensureVariableMappingForContextChange (ctx, M.empty) exVars
+  in
+   (ctx', transformBi (\(Ci vname) -> Ci (fromJust (M.lookup vname oldToNew))) vEx)
+
+ensureVariableMappingForContextChange (ctx, oldToNew) (vname, vd@(_, _, v))
+  | Just (_, _, vTry) <- M.lookup vname ctx, vTry == v = (ctx, M.insert vname vname oldToNew)
+  | Just (vNameNew, _) <- find (\(_, (_, _, vTry)) -> vTry == v) (M.toList ctx) =
+    (ctx, M.insert vname vNameNew oldToNew)
+  | otherwise =
+      let
+        vNameNew = findUnusedName vname ctx
+      in
+       (M.insert vNameNew vd ctx, M.insert vname vNameNew oldToNew)
+
+findUnusedName :: String -> M.Map String a -> String
+findUnusedName v m | Nothing <- M.lookup v m = v
+                   | otherwise =
+                     fromJust (find (flip M.member m) [v ++ show n | n <- [2..]])
 
 daeBoilerplateCode =
   "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES);\n\
