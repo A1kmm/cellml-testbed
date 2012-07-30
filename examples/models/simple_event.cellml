@@ -11,6 +11,7 @@
           <m:cn>5</m:cn>
         </m:apply>
       </m:apply>
+
       <m:apply><m:eq/>
         <m:apply><m:csymbol cd="cellml1">evaluatedAt</m:csymbol>
           <m:ci>time</m:ci><m:cn>0</m:cn>
@@ -18,13 +19,55 @@
         </m:apply>
         <m:cn>0</m:cn>
       </m:apply>
+
+      <!-- 
       <m:apply><m:eq/>
-        <m:apply><m:diff/><m:bvar><m:ci>time</m:ci></m:bvar><m:ci>x</m:ci></m:apply>
-        <m:piecewise>
-          <m:piece><m:cn>20</m:cn><m:ci>isEvent</m:ci></m:piece>
-          <m:otherwise><m:cn>10</m:cn></m:otherwise>
-        </m:piecewise>
+        <m:apply><m:csymbol cd="cellml1">evaluatedAt</m:csymbol>
+          <m:ci>time</m:ci><m:cn>0</m:cn>
+          <m:ci>y</m:ci>
+        </m:apply>
+        <m:cn>0</m:cn>
       </m:apply>
+      -->
+
+      <!--
+          <m:apply><m:eq/>
+            <m:apply><m:diff/><m:bvar><m:ci>time</m:ci></m:bvar><m:ci>x</m:ci></m:apply>
+            <m:cn>1</m:cn>
+          </m:apply>
+      -->
+      <m:piecewise>
+        <m:otherwise>
+          <m:apply><m:eq/>
+            <m:apply><m:diff/><m:bvar><m:ci>time</m:ci></m:bvar><m:ci>x</m:ci></m:apply>
+            <m:cn>1</m:cn>
+          </m:apply>
+        </m:otherwise>
+        <m:piece>
+          <m:apply><m:eq/>
+            <m:ci>x</m:ci>
+            <m:cn>0</m:cn>
+          </m:apply>
+          <m:ci>isEvent</m:ci>
+        </m:piece>
+      </m:piecewise>
+      <!-- 
+      <m:piecewise>
+        <m:piece>
+          <m:apply><m:eq/>
+            <m:ci>y</m:ci>
+            <m:ci>0</m:ci>
+          </m:apply>
+          <m:ci>isEvent</m:ci>
+        </m:piece>
+        <m:otherwise>
+          <m:apply><m:eq/>
+            <m:apply><m:diff/><m:bvar><m:ci>time</m:ci></m:bvar><m:ci>y</m:ci></m:apply>
+            <m:cn>2</m:cn>
+          </m:apply>
+        </m:otherwise>
+      </m:piecewise>
+      -->
     </m:math>
   </component>
 </model>

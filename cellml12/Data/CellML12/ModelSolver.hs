@@ -603,7 +603,7 @@ makeResidual' ctx (Apply op operands)
     (op1:op2:_) <- operands =
     return $ Apply (noSemCom $ Csymbol (Just "arith1") "minus") [op1, op2]
   | otherwise = Apply op <$> mapM (\v -> noSemCom <$> makeResidual' ctx (stripSemCom v)) operands
-makeResidual' _ ex = fail $ "Invalid top-level expression (not an apply): " ++ show ex
+makeResidual' _ ex = return ex
 
 putModelResiduals vmap@(VariableMap { vmapMap = m }) resids (constVars, varVars, eqnConst, eqnVary, ieqConst, ieqVary) = do
   forM_ (zip [0..] resids) $ \(i, Assertion (ex, AssertionContext ctx)) -> do
@@ -747,7 +747,7 @@ getOutput l = do
 classifyVariablesAndAssertions :: Monad m => DAEIntegrationSetup -> SimplifiedModel -> ErrorT String m ModelClassification
 classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (SimplifiedModel { assertions = assertions }) =
   let
-    (equations, inequalities) = partition isAssertionEquation assertions
+    (equations, inequalities) = partition (isEquation . stripPiecewiseOrLogic . assertionToAST) assertions
     usageList = map (S.fromList . findAssertionVariableUsage) equations
     allVars = S.unions usageList
     allVarsNoTime = S.delete (bv, 0, False) allVars
@@ -784,9 +784,16 @@ classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (
      return (constVarSet, varSet, reverse constEqns', varEqns, ieqConst, ieqVary)
    else fail $ "Trying to solve a model with " ++ (show nEqns) ++ " equations but " ++ (show nVarsNoTime) ++ " unknowns."
 
-isAssertionEquation (Assertion (WithMaybeSemantics _ (WithCommon _
-                      (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just "relation1") "eq"))) _)), _)) = True
-isAssertionEquation _ = False
+assertionToAST (Assertion (astc, _)) = stripSemCom astc
+stripPiecewiseOrLogic (Apply op (arg1:_))
+  | Csymbol (Just "logic1") _ <- stripSemCom op = stripPiecewiseOrLogic (stripSemCom arg1)
+  | opIs "piece1" "piecewise" op,
+    Apply opv (argv1:_) <- stripSemCom arg1,
+    (opIs "piece1" "piece" opv) || (opIs "piece1" "otherwise" opv) = stripPiecewiseOrLogic (stripSemCom argv1)
+stripPiecewiseOrLogic ex = ex
+
+isEquation (Apply op _) = opIs "relation1" "eq" op
+isEquation _ = False
 
 -- | Finds, within an assertion, all variables, classified by whether they are an
 -- | initial value or not, and their degree.
