@@ -135,7 +135,7 @@ instance Monad m => MonadState (SolverT m) where
 solveModelWithParameters :: DAEIntegrationProblem -> SolverT (ErrorT String IO) DAEIntegrationResult
 solveModelWithParameters p = do
   (hOut, vm@(VariableMap (vmap :: M.Map (VariableID, Int) (Maybe Int, Maybe Int)) _ _), setup) <- ask
-  let iBound = fromJust . fst $ vmap !! (daeBoundVariable setup, 0)
+  let iBound = maybe (error "Bound variable not in vmap!") id . fst $ vmap !! (daeBoundVariable setup, 0)
   
   -- Send the request for the problem to be solved...
   liftIO . BS.hPutStr hOut $ runPut $ do
@@ -143,7 +143,7 @@ solveModelWithParameters p = do
     putWord8 0
     -- Overrides...
     let pOverrides = mapMaybe (\(vardeg, newv) -> liftM (\v -> (v, newv)) $ M.lookup vardeg vmap) . daeParameterOverrides $ p
-    flip putListOf pOverrides $ putTwoOf (putWord32host . fromIntegral . (\(a, b) -> fromJust $ a `mplus` b)) (putFloat64le)
+    flip putListOf pOverrides $ putTwoOf (putWord32host . fromIntegral . (\(a, b) -> maybe (error "Override variable has no index") id $ a `mplus` b)) (putFloat64le)
     -- Bvar range...
     putTwoOf putFloat64le putFloat64le . daeBVarRange $ p
     putFloat64le . daeRelativeTolerance $ p
@@ -158,7 +158,7 @@ solveModelWithParameters p = do
     NumericalError str -> fail $ "Numerical problem: " ++ str
     NumericalSuccess -> do
       let r = (map (\x -> (x!iBound, x)) . mapMaybe onlyData $ numericalResult)
-      return $ DAEIntegrationResults { daeResultIndices = M.map (\(a, b) -> fromJust $ a `mplus` b) vmap, daeResults = r }
+      return $ DAEIntegrationResults { daeResultIndices = M.map (\(a, b) -> maybe (error "No index for result variable") id $ a `mplus` b) vmap, daeResults = r }
     _ -> fail "Incomplete results - solver program may have crashed"
 
 -- | Runs a solver monad over a particular model with a particular setup.
@@ -212,22 +212,29 @@ extractPiecewiseOtherwise _ = Nothing
 putExpression :: EvaluationPoint -> VariableMap -> M.Map String (TypeName, Maybe CanonicalUnits, VariableID) -> AST -> CodeGen ()
 
 putExpression ep vmap ctx x
-  | Just (varname, deg, isIV) <- tryGetVariableRef x = do
-    (_, _, var) <-
-      maybe (fail $ "Variable " ++ varname ++ " not found but named in ci") return $
-        M.lookup varname ctx
-    str <- maybe (fail $ "Cannot find C name for variable " ++ varname) return $
-             getVariableString (if isIV then TimeVaryingEvaluation else ep) vmap (var, deg)
-    cgAppend . LBS.pack $ str
+  | Just varname <- tryGetInfDelayed x = do
+    cgAppend "OLD"
+    doPutVar varname 0 False
+  | Just (varname, _) <- tryGetInfDelayedDeriv x = do
+    cgAppend "OLD"
+    doPutVar varname 1 False
+  | Just (varname, deg, isIV) <- tryGetVariableRef x = doPutVar varname deg isIV
+  where doPutVar varname deg isIV = do
+          (_, _, var) <-
+            maybe (fail $ "Variable " ++ varname ++ " not found but named in ci") return $
+              M.lookup varname ctx
+          str <- maybe (fail $ "Cannot find C name for variable " ++ varname ++ " (isIV = " ++ show isIV ++ ")") return $
+                   getVariableString (if isIV then TimeVaryingEvaluation else ep) vmap (var, deg)
+          cgAppend . LBS.pack $ str
 
-putExpression ep vmap ctx (Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just cd) name))) operands)
+putExpression ep vmap ctx x@(Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just cd) name))) operands)
   | cd == "logic1" = putLogicExpression
   | cd == "piece1" = putPieceExpression
   | cd == "relation1" = putRelationExpression
   | cd == "arith1" = putArithExpression
   | cd == "transc1" = putTranscExpression
   | cd == "rounding1" = putRoundingExpression
-  | otherwise = fail $ "Unrecognised content dictiorary " ++ cd ++ "in apply operator csymbol"
+  | otherwise = fail $ "Unrecognised content dictionary " ++ cd ++ " in apply operator csymbol " ++ show x
   where
     putLogicExpression
       | name == "equivalent" = binaryOperator "((" ")==(" "))"
@@ -410,6 +417,48 @@ getVariableString ep vm@(VariableMap { vmapNConsts = nc, vmapNVars = nv }) v = d
       | x <= (nc + nv) -> return $ "STATES[" ++ (show (varIndex - 1 - nc) ++ "]")
       | otherwise -> return $ "RATES[" ++ (show (varIndex - 1 - nc - nv) ++ "]")
 
+tryGetInfDelayed (Apply op1 [arg1, arg2, arg3])
+  | opIs "limit1" "limit" op1,
+    isParticularConstant 0 (stripSemCom arg1),
+    opIs "limit1" "below" arg2,
+    Bind op2 [bvar] arg4 <- stripSemCom arg3,
+    opIs "fns1" "lambda" op2,
+    Ci bvname <- stripSemCom bvar,
+    Apply op3 [arg5, arg6, arg7] <- stripSemCom arg4,
+    opIs "cellml1" "evaluatedAt" op3,
+    ASTCi (Ci tname) <- stripSemCom arg5,
+    -- To do: check arg5 matches problem bvar.
+    Apply op4 [arg8, arg9] <- stripSemCom arg6,
+    opIs "arith1" "plus" op4,
+    ASTCi (Ci tname1) <- stripSemCom arg8,
+    tname1 == tname,
+    ASTCi (Ci bvname1) <- stripSemCom arg9,
+    bvname1 == bvname,
+    ASTCi (Ci vname) <- stripSemCom arg7 = Just vname
+tryGetInfDelayed _ = Nothing
+
+tryGetInfDelayedDeriv (Apply op1 [arg1, arg2, arg3])
+  | opIs "limit1" "limit" op1,
+    isParticularConstant 0 (stripSemCom arg1),
+    opIs "limit1" "below" arg2,
+    Bind op2 [bvar] arg4 <- stripSemCom arg3,
+    opIs "fns1" "lambda" op2,
+    Ci bvname <- stripSemCom bvar,
+    Apply op3 [arg5, arg6, arg7] <- stripSemCom arg4,
+    opIs "cellml1" "evaluatedAt" op3,
+    ASTCi (Ci tname) <- stripSemCom arg5,
+    -- To do: check arg5 matches problem bvar.
+    Apply op4 [arg8, arg9] <- stripSemCom arg6,
+    opIs "arith1" "plus" op4,
+    ASTCi (Ci tname1) <- stripSemCom arg8,
+    tname1 == tname,
+    ASTCi (Ci bvname1) <- stripSemCom arg9,
+    bvname1 == bvname,
+    Apply op5 [arg10] <- stripSemCom arg7,
+    opIs "calculus1" "diff" op5,
+    Just varName <- tryGetLambdaVariable (stripSemCom arg10) = Just (varName, bvname)
+tryGetInfDelayedDeriv _ = Nothing
+
 conversionFactor convertFrom@(CanonicalUnits fromOffs fromMup _) convertTo@(CanonicalUnits toOffs toMup _) =
   ((fromMup / toMup) * fromOffs - toOffs, fromMup / toMup)
 
@@ -444,6 +493,8 @@ substituteUnits sm@(SimplifiedModel { variableInfo = variableInfo, assertions = 
         convertOneVariable expr (offs, mup) =
           considerApply "arith1" "plus" 0 offs . considerApply "arith1" "times" 1 mup $ expr
         ignoringSemCom f (WithMaybeSemantics s (WithCommon c x)) = WithMaybeSemantics s (WithCommon c (f x))
+        applyConversions bvar x
+          | Just v <- tryGetInfDelayed x = maybe x (convertOneVariable x) (M.lookup v conversionFactors)
         applyConversions bvar x@(ASTCi (Ci str))
           | not (str `S.member` bvar) = maybe x (convertOneVariable x) (M.lookup str conversionFactors)
         applyConversions bvar expr@(Apply (WithMaybeSemantics _ (WithCommon _ (
@@ -454,6 +505,10 @@ substituteUnits sm@(SimplifiedModel { variableInfo = variableInfo, assertions = 
                                                                               )))
                                          [WithMaybeSemantics _ (WithCommon _ (ASTCi (Ci bvarName)))])
           | Just (varOffs, varMup) <- M.lookup varName conversionFactors,
+            Just (_, bvarMup) <- M.lookup bvarName conversionFactors = convertOneVariable expr (varOffs, varMup / bvarMup)
+        applyConversions bvar expr
+          | Just (varName, bvarName) <- tryGetInfDelayedDeriv expr,
+            Just (varOffs, varMup) <- M.lookup varName conversionFactors,
             Just (_, bvarMup) <- M.lookup bvarName conversionFactors = convertOneVariable expr (varOffs, varMup / bvarMup)
         applyConversions bvar (Apply op operands) = Apply op (map (ignoringSemCom (applyConversions bvar)) operands)
         applyConversions bvar (Bind op newBvar operand) =
@@ -554,7 +609,8 @@ solveSystem ep vmap known eqns = do
   let newVars = allVars `S.difference` known
   let copyParams =
         forM_ (zip [0..] (S.toList newVars)) $ \(param, (v, deg, iv)) -> do
-          vName <- maybe (fail $ "Variable " ++ show (v, deg) ++ " in equation not in variable map " ++ (show vmap)) return $
+          vName <- maybe (fail $ "Variable " ++ show (v, deg) ++ " (iv=" ++ show iv ++
+                          ") in equation not in variable map " ++ (show vmap)) return $
                      getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg)
           cgAppend (LBS.pack vName)
           cgAppend " = params["
@@ -621,9 +677,9 @@ putModelResiduals vmap@(VariableMap { vmapMap = m }) resids (constVars, varVars,
       cgAppend "residuals["
       cgAppend . LBS.pack . show $ i
       cgAppend "] = ("
-      cgAppend . LBS.pack . fromJust $ getVariableString TimeVaryingEvaluation vmap (v, deg)
+      cgAppend . LBS.pack . (maybe (error "TVE var - no index") id) $ getVariableString TimeVaryingEvaluation vmap (v, deg)
       cgAppend ") - ("
-      cgAppend . LBS.pack . fromJust $ getVariableString ConstantEvaluation vmap (v, deg)
+      cgAppend . LBS.pack . (maybe (error "CE var - no index") id)$ getVariableString ConstantEvaluation vmap (v, deg)
       cgAppend ")"
   if null ieqVary then cgAppend "return 0;\n"
     else do
@@ -755,7 +811,7 @@ classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (
                                                not ((v, d + 1, False) `S.member` allVarsNoTime)) allVarsNoTime
     -- Note: for the purposes of the usage list, IVs and rates do not depend on
     -- 'time', we are only looking for explicit time dependencies.
-    equationsNoTime = filter (\(_, vu) -> not $ (bv, 0, False) `S.member` vu) $
+    equationsNoTime = filter (\(_, vu) -> not $ (bv, 0, False) `S.member` vu || any (\(_, deg, iv) -> deg == 0 && not iv) (S.toList vu)) $
                       zip equations usageList
     allVarsNoStatesL = S.toList allVarsNoStates
     nEqns = length equations
@@ -801,30 +857,9 @@ findAssertionVariableUsage :: Assertion -> [(VariableID, Int, Bool)]
 findAssertionVariableUsage (Assertion (ex, AssertionContext vmap)) =
   findExpressionVariableUsage (M.map (\(_, _, v) -> v) vmap) (stripSemCom ex)
 
-findExpressionVariableUsage nameToVar (ASTCi (Ci varName))
-  | Just varid <- M.lookup varName nameToVar = [(varid, 0, False)]
-
-findExpressionVariableUsage nameToVar (Apply op [expr])
-  | opIs "calculus1" "diff" op,
-    Just varName <- tryGetLambdaVariable (stripSemCom expr),
-    Just varid <- M.lookup varName nameToVar = [(varid, 1, False)]
-
-findExpressionVariableUsage nameToVar (Apply op [boundE, whenE, varE])
-  | opIs "cellml1" "evaluatedAt" op,
-    -- XXX we really should check all whenE values are consistent, and that
-    -- boundE is the bound variable the problem is over.
-    Just whenc <- tryGetConstant whenE,
-    ASTCi (Ci varName) <- stripSemCom varE,
-    Just varid <- M.lookup varName nameToVar = [(varid, 0, True)]
-
-findExpressionVariableUsage nameToVar (Apply op [boundE, whenE, WithMaybeSemantics _ (WithCommon _ (Apply op2 [expr]))])
-  | opIs "cellml1" "evaluatedAt" op,
-    opIs "calculus1" "diff" op2,
-    -- XXX we really should check all whenE values are consistent, and that
-    -- boundE is the bound variable the problem is over.
-    Just whenc <- tryGetConstant whenE,
-    ASTCi (Ci varName) <- stripSemCom expr,
-    Just varid <- M.lookup varName nameToVar = [(varid, 1, True)]
+findExpressionVariableUsage nameToVar x
+  | Just (name, deg, isiv) <- tryGetVariableRef x,
+    Just varid <- M.lookup name nameToVar = [(varid, deg, isiv)]
 
 findExpressionVariableUsage nameToVar (Bind op bvars expression) =
   let
@@ -955,6 +990,9 @@ tryGetVariableRef (Apply op [boundE, whenE, WithMaybeSemantics _ (WithCommon _ (
     -- boundE is the bound variable the problem is over.
     Just whenc <- tryGetConstant whenE,
     ASTCi (Ci varName) <- stripSemCom expr = Just (varName, 1, True)
+tryGetVariableRef x
+  | Just name <- tryGetInfDelayed x = Just (name, 0, False)
+  | Just (name, _) <- tryGetInfDelayedDeriv x = Just (name, 1, False)
 tryGetVariableRef _ = Nothing
 
 tryGetConstant (WithMaybeSemantics _ (WithCommon _ (Cn cp))) =
@@ -1446,6 +1484,9 @@ takePartialDerivativeEx m wrt (Apply (WithMaybeSemantics s (WithCommon c (Csymbo
   | cd == "arith1" = takePartialDerivativeArith
   | cd == "transc1" = takePartialDerivativeTransc
   | cd == "rounding1" = takePartialDerivativeRounding
+  -- Only used for infinitesimally delayed expressions, which don't vary with
+  -- the current value for the purposes of the solver.
+  | cd == "limit1" && name == "limit" = return $ Cn (CnInteger 0)
   | otherwise = fail $ "Don't know how to differentiate symbols from content dictionary " ++ cd
   where
     takePartialDerivativePiece
@@ -1754,7 +1795,7 @@ substituteBooleanVariables (sm@(SimplifiedModel { assertions = a })) = do
   bmap <- tryBuildBooleanSubstitutionMap (length a) M.empty bassigns (M.fromList bassigns)
   return $ sm { assertions = flip map asserts $ \(Assertion (assert, ctx)) ->
                  let (AssertionContext ctx', assert') =
-                       substituteExpressionFixingContext (ctx, stripSemCom assert) bmap 
+                       substituteExpressionFixingContext (ctx, stripSemCom assert) bmap
                  in
                   Assertion (noSemCom assert', AssertionContext ctx')
               }
@@ -1809,7 +1850,7 @@ buildExpressionForNewContext mExprs (ctx, subs) v =
     exVars = [ (vname, vd) | Ci vname <- universeBi vEx, Just vd <- [M.lookup vname oldCtx] ]
     (ctx', oldToNew) = foldl' ensureVariableMappingForContextChange (ctx, M.empty) exVars
   in
-   (ctx', transformBi (\(Ci vname) -> Ci (fromJust (M.lookup vname oldToNew))) vEx)
+   (ctx', transformBi (\x@(Ci vname) -> maybe x id $ Ci <$> (M.lookup vname oldToNew)) vEx)
 
 ensureVariableMappingForContextChange (ctx, oldToNew) (vname, vd@(_, _, v))
   | Just (_, _, vTry) <- M.lookup vname ctx, vTry == v = (ctx, M.insert vname vname oldToNew)
@@ -1824,24 +1865,24 @@ ensureVariableMappingForContextChange (ctx, oldToNew) (vname, vd@(_, _, v))
 findUnusedName :: String -> M.Map String a -> String
 findUnusedName v m | Nothing <- M.lookup v m = v
                    | otherwise =
-                     fromJust (find (flip M.member m) [v ++ show n | n <- [2..]])
+                     (maybe (error "End of inf list") id) (find (flip M.member m) [v ++ show n | n <- [2..]])
 
 daeBoilerplateCode =
-  "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES);\n\
-  \int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* residuals);\n\
+  "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES);\n\
+  \int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES, double* residuals);\n\
   \int paramsToState(double* params, double* STATES, double* RATES);\n\
-  \void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* v, double* Jv);\n\
+  \void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES, double* v, double* Jv);\n\
   \void getEventRoots(double t, double* CONSTANTS, double* STATES, double* RATES, double* roots);\n\
   \#include \"cellml12-solver-protocol.h\"\n"
-daeInitialPrefix = "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES)\n{\n"
+daeInitialPrefix = "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES)\n{\n"
 daeInitialSuffix = "}\n"
-daeResidualPrefix = "int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* residuals)\n{\n"
+daeResidualPrefix = "int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES, double* residuals)\n{\n"
 daeResidualSuffix = "}\n"
 paramToStatePrefix = "int paramsToState(double* params, double* STATES, double* RATES)\n{\n"
 paramToStateSuffix = "  return 0;\n}\n"
 
-daeJacobianPrefix = "void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* v, double* Jv)\n{\n"
+daeJacobianPrefix = "void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES, double* v, double* Jv)\n{\n"
 daeJacobianSuffix = "}\n"
 
-daeEventRootsPrefix = "void getEventRoots(double t, double* CONSTANTS, double* STATES, double* RATES, double* roots)\n{\n"
+daeEventRootsPrefix = "void getEventRoots(double t, double* CONSTANTS, double* STATES, double* RATES, double* roots)\n{\ndouble * OLDSTATES = STATES, * OLDRATES = RATES;\n"
 daeEventRootsSuffix = "}\n"

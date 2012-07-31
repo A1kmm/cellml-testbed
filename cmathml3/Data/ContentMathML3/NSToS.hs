@@ -106,7 +106,7 @@ pass1 :: NSAST -> NSAST
 pass1 = normaliseNSBind
 
 normaliseNSBind (NSBind op bvar qual operands)
-  | not (null bvar) || not (null qual) || length (take 2 operands) > 1 =
+  | length (take 2 bvar) /= 1 || not (null qual) || length (take 2 operands) > 1 =
     NSApply op bvar qual operands
 normaliseNSBind (NSRelation op l) = NSApply op [] [] l
 normaliseNSBind (NSFunction (WithMaybeSemantics _ (WithNSCommon _ ex))) = ex
@@ -542,13 +542,13 @@ exprPass6MR (WithNSCommon c (NSMatrixRow bv quals (expr:_)))
 
 pass6b :: NSAST -> NSAST
 pass6b = exprPass6b
-exprPass6b (NSApply op bv@(_:_) quals args) =
-  let
-    doas = mapMaybe qualifierToMaybeDOA quals
-    lambdaArgs = flip map args $ \arg ->
-      noNSSemCom $ NSBind (noNSSemCom $ simpleCsymbol "fns1" "lambda") bv [] [arg]
-  in
-   NSApply op [] [] (doas ++ lambdaArgs)
+exprPass6b (NSApply op bv@(_:_) quals args) 
+  | doas@(_:_) <- mapMaybe qualifierToMaybeDOA quals =
+    let
+      lambdaArgs = flip map args $ \arg ->
+        noNSSemCom $ NSBind (noNSSemCom $ simpleCsymbol "fns1" "lambda") bv [] [arg]
+    in
+     NSApply op [] [] (doas ++ lambdaArgs)
 exprPass6b x = x
 
 pass7 :: NSAST -> NSAST

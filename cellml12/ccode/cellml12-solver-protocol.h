@@ -9,7 +9,7 @@
 #include <kinsol/kinsol_spgmr.h>
 
 struct ArrayBundle {
-  double* abConstants, * abStates, * abRates;
+  double* abConstants, * abStates, * abRates, * abOldStates, * abOldRates;
 };
 
 struct KSData {
@@ -21,9 +21,13 @@ struct KSData {
   double * CONSTANTS; \
   double * STATES; \
   double * RATES; \
+  double * OLDSTATES; \
+  double * OLDRATES; \
   CONSTANTS = ((struct ArrayBundle*)allState)->abConstants; \
   STATES = ((struct ArrayBundle*)allState)->abStates; \
-  RATES = ((struct ArrayBundle*)allState)->abRates;
+  RATES = ((struct ArrayBundle*)allState)->abRates; \
+  OLDSTATES = ((struct ArrayBundle*)allState)->abOldStates; \
+  OLDRATES = ((struct ArrayBundle*)allState)->abOldRates;
 
 int solver_call(N_Vector params, N_Vector resids, void* udata)
 {
@@ -90,7 +94,8 @@ struct Override {
   double overVal;
 };
 
-#define NWORK (1 + NCONSTS + NVARS*2)
+#define NWORK (1 + NCONSTS + NVARS*4)
+#define NSEND (1 + NCONSTS + NVARS*2)
 
 void err_report(int code, const char* mod, const char* func, const char* msg, void* udata)
 {
@@ -150,7 +155,10 @@ int compute_residuals(double t, N_Vector yy, N_Vector yp, N_Vector r, void* user
   for (i = 0; i < NVARS; i++)
     fprintf(stderr, "VARS[%d] = %g, RATES[%d] = %g\n", i, states[i], i, rates[i]);
 #endif
-  ret = solveResiduals(t, work + 1, states, rates, residuals);
+  ret = solveResiduals(t, work + 1, states, rates,
+                       work + 1 + NCONSTS + NVARS * 2,
+                       work + 1 + NCONSTS + NVARS * 3,
+                       residuals);
 #ifdef DEBUG_RESIDUALS
   for (i = 0; i < NVARS; i++)
     fprintf(stderr, "residuals[%d] = %g\n", i, residuals[i]);
@@ -163,17 +171,22 @@ int compute_jacobian(double t, N_Vector yy, N_Vector yp, N_Vector r, N_Vector vv
   double * work = user_data, * states = NV_DATA_S(yy), * rates = NV_DATA_S(yp),
     * residuals = NV_DATA_S(r), * v = NV_DATA_S(vv), * Jv = NV_DATA_S(Jvv);
 
-  solveJacobianxVec(t, alpha, work + 1, states, rates, v, Jv);
+  solveJacobianxVec(t, alpha, work + 1, states, rates, work + 1 + NCONSTS + NVARS * 2,
+                    work + 1 + NCONSTS + NVARS * 3, v, Jv);
 
   return 0;
 }
 
+#ifdef ONLY_RESID_VARS
 int consistent_solve_step(N_Vector params, N_Vector resids, void* udata)
 {
   int ret;
   double* work = udata;
   paramsToState(NV_DATA_S(params), work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS);
-  return solveResiduals(work[0], work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS, NV_DATA_S(resids));
+  return solveResiduals(work[0], work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS,
+                        work + 1 + NCONSTS + NVARS * 2,
+                        work + 1 + NCONSTS + NVARS * 3,
+                        NV_DATA_S(resids));
 }
 
 int ensure_consistent_at(double t, double* work)
@@ -219,6 +232,107 @@ int ensure_consistent_at(double t, double* work)
 
   return flag;
 }
+#endif
+
+struct SolveRatesState {
+  int isRateSensitive[NVARS];
+  double* work;
+};
+
+int consistent_solve_step(N_Vector params, N_Vector resids, void* udata)
+{
+  int ret, i;
+  struct SolveRatesState* srs = udata;
+
+  for (i = 0; i < NVARS; i++)
+    if (srs->isRateSensitive[i])
+        srs->work[1 + NCONSTS + NVARS + i] = NV_DATA_S(params)[i];
+    else
+      srs->work[1 + NCONSTS + i] = NV_DATA_S(params)[i];
+
+  return solveResiduals(srs->work[0], srs->work + 1, srs->work + 1 + NCONSTS,
+                        srs->work + 1 + NCONSTS + NVARS,
+                        srs->work + 1 + NCONSTS + NVARS * 2,
+                        srs->work + 1 + NCONSTS + NVARS * 3,
+                        NV_DATA_S(resids));
+}
+
+int ensure_consistent_at(double t, double* work)
+{
+  struct SolveRatesState srs;
+  double resids1[NVARS], resids2[NVARS];
+  N_Vector params, ones;
+  void* solver;
+  int flag, i, j;
+
+  if (NVARS == 0)
+    return 0;
+
+  solveResiduals(work[0], work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS,
+                 work + 1 + NCONSTS + NVARS * 2,
+                 work + 1 + NCONSTS + NVARS * 3,
+                 resids1);
+  for (i = 1 + NCONSTS + NVARS; i < 1 + NCONSTS + NVARS * 2; i++)
+  {
+    double backwork = work[i];
+    if (fabs(work[i]) < 1E-6)
+      work[i] = 1.0;
+    else
+      work[i] *= 1.01;
+    solveResiduals(work[0], work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS,
+                   work + 1 + NCONSTS + NVARS * 2,
+                   work + 1 + NCONSTS + NVARS * 3,
+                   resids2);
+    srs.isRateSensitive[i - (NCONSTS + NVARS + 1)] = 0;
+    for (j = 0; j < NVARS; j++)
+      if (resids1[j] != resids2[j])
+      {
+        srs.isRateSensitive[i - (NCONSTS + NVARS + 1)] = 1;
+        break;
+      }
+    work[i] = backwork;
+  }
+
+  params = N_VNew_Serial(NVARS);
+  memset(NV_DATA_S(params), 0, sizeof(double) * NVARS);
+
+  srs.work = work;
+  solver = KINCreate();
+  KINInit(solver, consistent_solve_step, params);
+  KINSetUserData(solver, &srs);
+  KINSetErrHandlerFn(solver, err_report, NULL);
+  KINSpgmr(solver, 0);
+  
+  work[0] = t;
+
+  ones = N_VNew_Serial(NRESIDINITVARS);
+  N_VConst(1.0, ones);
+  KINSetMaxNewtonStep(solver, 1E20);
+  flag = KINSol(solver, params, KIN_LINESEARCH, ones, ones);
+
+  for (i = 0; i < NVARS; i++)
+    if (srs.isRateSensitive[i])
+      work[1 + NCONSTS + NVARS + i] = NV_DATA_S(params)[i];
+    else
+      work[1 + NCONSTS + i] = NV_DATA_S(params)[i];
+
+  {
+    double norm;
+    int i;
+    flag = KINGetFuncNorm(solver, &norm);
+#ifdef DEBUG_RESIDUALS
+    fprintf(stderr, "Final residual: %g, flag = %d\n", norm, flag);
+    for (i = 0; i < NRESIDINITVARS; i++)
+      fprintf(stderr, " param[%d] = %g\n", i, NV_DATA_S(params)[i]);
+#endif
+  }
+
+  KINFree(&solver);
+  N_VDestroy(ones);
+  N_VDestroy(params);
+
+  return flag;
+}
 
 int
 ida_root_func(double t, N_Vector y, N_Vector yp, double* gout, void* user_data)
@@ -234,8 +348,6 @@ int main(int argc, char** argv)
   double* work = malloc(sizeof(double) * NWORK);
   memset(work, 0, sizeof(double) * NWORK);
 
-  /* sleep(10); */
-
   while (1)
   {
     uint64_t nOverrides, i;
@@ -245,7 +357,7 @@ int main(int argc, char** argv)
     uint8_t byte;
     void* idaProblem;
     N_Vector yvec, ypvec;
-    int wasSuccess = 0;
+    int wasSuccess = 0, shouldRestart;
 
     read_fully(1, &byte);
     if (byte == 1)
@@ -258,7 +370,8 @@ int main(int argc, char** argv)
     read_fully(sizeof(double), &relTol);
     read_fully(sizeof(double), &absTol);
 
-    solret = solveForIVs(tStart, work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS);
+    solret = solveForIVs(tStart, work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS,
+                         work + 1 + NCONSTS + NVARS * 2, work + 1 + NCONSTS + NVARS * 3);
     for (i = 0; i < nOverrides; i++)
       work[overrides[i].overVar] = overrides[i].overVal;
 
@@ -266,59 +379,71 @@ int main(int argc, char** argv)
     /* Error will have already been produced if this fails. */
     if (solret)
       continue;
-    
-    idaProblem = IDACreate();
-    IDASetErrHandlerFn(idaProblem, err_report, NULL);
-
-    ensure_consistent_at(tStart, work);
 
     yvec = N_VMake_Serial(NVARS, work + 1 + NCONSTS);
     ypvec = N_VMake_Serial(NVARS, work + 1 + NCONSTS + NVARS);
-
-    IDASetUserData(idaProblem, work);
-    IDAInit(idaProblem, compute_residuals, tStart, yvec, ypvec);
-    IDASStolerances(idaProblem, relTol, absTol);
-    IDASpgmr(idaProblem, 0);
-    IDASetStopTime(idaProblem, tEnd);
-    IDASpilsSetJacTimesVecFn(idaProblem, compute_jacobian);
-
-    // TODO: IDARootInit for piecewise changes...
-
-    solret = IDA_SUCCESS;
+    
     tActual = tStart;
-    while (1)
+
+    do
     {
-      if (solret != IDA_SUCCESS && solret != IDA_TSTOP_RETURN && solret != IDA_ROOT_RETURN)
-        break;
+      shouldRestart = 0;
+      idaProblem = IDACreate();
 
-      /* Send NumericalData */
-      byte = 2;
-      write_fully(1, &byte);
-      work[0] = tActual;
-      write_fully(NWORK * sizeof(double), work);
+      IDASetErrHandlerFn(idaProblem, err_report, NULL);
 
-      if (tEnd - tActual <= fabs(1E-6 * (tEnd - tStart)))
-      {
-        wasSuccess = 1;
-        break;
-      }
+      ensure_consistent_at(tActual, work);
 
+      IDASetUserData(idaProblem, work);
+      IDAInit(idaProblem, compute_residuals, tActual, yvec, ypvec);
+      IDASStolerances(idaProblem, relTol, absTol);
+      IDASpgmr(idaProblem, 0);
+      IDASetStopTime(idaProblem, tEnd);
+      IDASpilsSetJacTimesVecFn(idaProblem, compute_jacobian);
+      
       if (NROOTS > 0)
         IDARootInit(idaProblem, NROOTS, ida_root_func);
 
-      solret = IDASolve(idaProblem, tEnd, &tActual, yvec, ypvec, IDA_ONE_STEP);
-    }
+      solret = IDA_SUCCESS;
+      while (1)
+      {
+        if (solret != IDA_SUCCESS && solret != IDA_TSTOP_RETURN && solret != IDA_ROOT_RETURN)
+          break;
 
-    if (wasSuccess)
-    {
-      /* Send NumericalSuccess */
-      byte = 1;
-      write_fully(1, &byte);
-    }
+        if (solret == IDA_ROOT_RETURN)
+        {
+          shouldRestart = 1;
+          break;
+        }
 
+        /* Send NumericalData */
+        byte = 2;
+        write_fully(1, &byte);
+        work[0] = tActual;
+        write_fully(NSEND * sizeof(double), work);
+        
+        if (tEnd - tActual <= fabs(1E-6 * (tEnd - tStart)))
+        {
+          wasSuccess = 1;
+          break;
+        }
+
+        solret = IDASolve(idaProblem, tEnd, &tActual, yvec, ypvec, IDA_ONE_STEP);
+        /* Update the OLDSTATES and OLDRATES data... */
+        memcpy(work + 1 + NCONSTS + NVARS * 2, work + 1 + NCONSTS, NVARS * 2 * sizeof(double));
+      }
+
+      if (wasSuccess)
+      {
+        /* Send NumericalSuccess */
+        byte = 1;
+        write_fully(1, &byte);
+      }
+
+      IDAFree(&idaProblem);
+    } while (shouldRestart);
     N_VDestroy(yvec);
     N_VDestroy(ypvec);
-    IDAFree(&idaProblem);
   }
 
   free(work);

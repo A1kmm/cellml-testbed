@@ -6,8 +6,22 @@
     <m:math>
       <m:apply><m:eq/>
         <m:ci>isEvent</m:ci>
-        <m:apply><m:gt/>
-          <m:ci>x</m:ci>
+        <m:apply><m:geq/>
+          <m:apply><m:csymbol cd="limit1">limit</m:csymbol>
+            <m:cn>0</m:cn><m:csymbol cd="limit1">below</m:csymbol>
+            <m:bind>
+              <m:csymbol cd="fns1">lambda</m:csymbol>
+              <m:bvar><m:ci>ht</m:ci></m:bvar>
+              <m:apply><m:csymbol cd="cellml1">evaluatedAt</m:csymbol>
+                <m:ci>time</m:ci>
+                <m:apply><m:csymbol cd="arith1">plus</m:csymbol>
+                  <m:ci>time</m:ci>
+                  <m:ci>ht</m:ci>
+                </m:apply>
+                <m:ci>x</m:ci>
+              </m:apply>
+            </m:bind>
+          </m:apply>
           <m:cn>5</m:cn>
         </m:apply>
       </m:apply>

@@ -277,9 +277,9 @@ parseNSAST =
   )) <+>
   (melem "bind" >>> liftAM4 NSBind
                        ((listA (getChildren >>> isElem) >>^ head) >>> parseMathMLExpression)
-                       (listAM (melem "bvar" >>> parseBvar))
-                       (listAM (isQualifier >>> parseQualifier))
-                       (listAM ((listA (getChildren >>> isElem) >>^ tail) >>> unlistA >>>
+                       (listAM (getChildren >>> melem "bvar" >>> parseBvar))
+                       (listAM (getChildren >>> isQualifier >>> parseQualifier))
+                       (listAM ((listA (getChildren >>> isElem >>> isntBvar >>> isntQualifier) >>^ tail) >>> unlistA >>>
                                 parseMathMLExpression))) <+>
   (melem "cerror" >>> liftAM2 NSError
                         ((listA (getChildren >>> isElem) >>^ head) >>> parseMathMLExpression)
