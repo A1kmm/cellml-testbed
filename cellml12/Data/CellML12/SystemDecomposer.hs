@@ -10,12 +10,25 @@ import Data.List
 type Equation = Int
 type Variable = Int
 
-smallestDecompose :: UArray (Equation, Variable) Bool -> S.Set Equation -> S.Set Variable -> [([Equation], [Variable])]
-smallestDecompose involves eqns vars
+smallestDecompose :: UArray (Equation, Variable) Bool -> S.Set Equation -> S.Set Variable -> [(Equation, ([Variable], [Variable]))]
+                     -> [([Equation], [Variable])]
+smallestDecompose involves eqns vars edges
   | eqns == S.empty = []
+  | Just (edges', (eqnFound, (varKnown, _))) <- useOneEdge edges vars =
+    ([eqnFound], varKnown):(smallestDecompose involves (S.delete eqnFound eqns) (foldl' (flip S.delete) vars varKnown) edges')
   | Just e@(removedEqns, removedVars) <- smallestDecomposeOne involves eqns vars =
-     e:(smallestDecompose involves (foldl' (flip S.delete) eqns removedEqns) (foldl' (flip S.delete) vars removedVars))
+     e:(smallestDecompose involves (foldl' (flip S.delete) eqns removedEqns) (foldl' (flip S.delete) vars removedVars) edges)
   | otherwise = []
+
+useOneEdge [] _ = Nothing
+useOneEdge ((edge@(eqn, (vk, vn))):edges') vars =
+  let
+    vn' = filter (flip S.member vars) vn
+  in
+   if null vn' then
+     Just (edges', edge)
+   else
+     liftM (\(edges'', e) -> (edge:edges'', e)) $ useOneEdge edges' vars
 
 smallestDecomposeOne involves eqns vars =
   listToMaybe $ mapMaybe (tryDecomposeOne involves eqns vars S.empty S.empty) [(i, i) | i <- [1..(S.size eqns)]]

@@ -62,6 +62,8 @@ data EvaluationPoint =
   TimeVaryingEvaluation deriving (Eq, Ord, Show)
 
 data VariableMap = VariableMap { vmapMap :: M.Map (VariableID, Int) (Maybe Int, Maybe Int),
+                                 vmapBVars :: M.Map String Int,
+                                 vmapNBVars :: Int,
                                  vmapNConsts :: Int,
                                  vmapNVars :: Int
                                } deriving (Eq, Ord, Show)
@@ -79,13 +81,13 @@ data NumericalEntry = NumericalError String | NumericalSuccess | NumericalData (
 class Monad m => MonadSolver m where
   liftSolver :: Monad m2 => SolverT m2 a -> m a
 
-newtype CodeGen a = CodeGen { runCodeGen :: (LBS.ByteString, LBS.ByteString, Int) ->
-                                            Either String (LBS.ByteString, LBS.ByteString, Int, a) }
+newtype CodeGen a = CodeGen { runCodeGen :: (LBS.ByteString, LBS.ByteString, Int, Int) ->
+                                            Either String (LBS.ByteString, LBS.ByteString, Int, Int, a) }
 instance Monad CodeGen where
-  return x = CodeGen (\(a,b,c) -> Right (a,b,c,x))
-  CodeGen cg1 >>= cg2 = CodeGen (\(a,b,c) ->
-                                  case cg1 (a, b, c) of
-                                    Right (a', b', c', x) -> (runCodeGen $ cg2 x) (a', b', c')
+  return x = CodeGen (\(a,b,c,d) -> Right (a,b,c,d,x))
+  CodeGen cg1 >>= cg2 = CodeGen (\(a,b,c,d) ->
+                                  case cg1 (a, b, c, d) of
+                                    Right (a', b', c', d', x) -> (runCodeGen $ cg2 x) (a', b', c', d')
                                     Left e -> Left e)
   fail e = CodeGen (const $ Left e)
 instance Functor CodeGen where
@@ -95,16 +97,22 @@ instance Applicative CodeGen where
   a <*> b = a >>= flip liftM b
 
 cgAllocateIndex :: CodeGen Int
-cgAllocateIndex = CodeGen $ \(s1, s2, idx) -> Right (s1, s2, idx + 1, idx)
+cgAllocateIndex = CodeGen $ \(s1, s2, idx, mb) -> Right (s1, s2, idx + 1, mb, idx)
+
+cgAllocateBVar :: String -> VariableMap -> CodeGen VariableMap
+cgAllocateBVar n vmap = CodeGen $ \(s1, s2, idx, mb) ->
+  Right (s1, s2, idx, max mb (vmapNBVars vmap + 1),
+         vmap { vmapBVars = M.insert n (vmapNBVars vmap) (vmapBVars vmap),
+                vmapNBVars = vmapNBVars vmap + 1 })
 
 cgFunction :: CodeGen a -> CodeGen a
-cgFunction (CodeGen cg) = CodeGen $ \(s1, s2, idx) ->
-  case (cg ("", s2, idx)) of
-    Right (s1', s2', idx', ret) -> Right (s1, s2 `LBS.append` s2' `LBS.append` s1', idx', ret)
+cgFunction (CodeGen cg) = CodeGen $ \(s1, s2, idx, s3) ->
+  case (cg ("", s2, idx, s3)) of
+    Right (s1', s2', idx', s3', ret) -> Right (s1, s2 `LBS.append` s2' `LBS.append` s1', idx', s3', ret)
     e -> e
 
 cgAppend :: LBS.ByteString -> CodeGen ()
-cgAppend bs = CodeGen $ \(s1, s2, idx) -> Right (s1 `LBS.append` bs, s2, idx, ())
+cgAppend bs = CodeGen $ \(s1, s2, idx, s3) -> Right (s1 `LBS.append` bs, s2, idx, s3, ())
 
 type SolverInternalsT m a = ReaderT (Handle, VariableMap, DAEIntegrationSetup) (StateT LBS.ByteString m) a
 newtype SolverT m a = SolverT {unsolver :: SolverInternalsT m a }
@@ -134,7 +142,7 @@ instance Monad m => MonadState (SolverT m) where
 
 solveModelWithParameters :: DAEIntegrationProblem -> SolverT (ErrorT String IO) DAEIntegrationResult
 solveModelWithParameters p = do
-  (hOut, vm@(VariableMap (vmap :: M.Map (VariableID, Int) (Maybe Int, Maybe Int)) _ _), setup) <- ask
+  (hOut, vm@(VariableMap { vmapMap = vmap }), setup) <- ask
   let iBound = maybe (error "Bound variable not in vmap!") id . fst $ vmap !! (daeBoundVariable setup, 0)
   
   -- Send the request for the problem to be solved...
@@ -399,6 +407,7 @@ assignIndicesToVariables setup m constVars varVars =
                                  [(Nothing, Just i) | i <- [(nConsts + nVars + 1)..(nConsts + nVars * 2)]]))
   in
    VariableMap { vmapMap = M.unionWith (\(a1, b1) (a2, b2) -> (a1 `mplus` a2, b2 `mplus` b1)) otherVars varsRates,
+                 vmapBVars = M.empty, vmapNBVars = 0,
                  vmapNConsts = nConsts, vmapNVars = nVars }
 
 -- | Gets the index in the work array appropriate for a given stage of the evaluation.
@@ -529,7 +538,7 @@ writeDAECode vmap model problem classification =
     lenDefines = LBS.pack ((showString "#define NCONSTS " . shows (vmapNConsts vmap) . showString"\n#define NVARS " .
                             shows (vmapNVars vmap) . showString "\n#define NRESIDINITVARS " . shows nresidInit . showString "\n#define NROOTS " . shows nroots) "\n")
     ret =
-      flip runCodeGen ("", "", 0) $ do
+      flip runCodeGen ("", "", 0, 0) $ do
         resids <- modelAsResiduals classification
         
         cgAppend daeInitialPrefix
@@ -555,8 +564,9 @@ writeDAECode vmap model problem classification =
         -- To do: uncertain starting parameters.
   in
    case ret of
-     Right (mainCode, preFuncs, _, _) ->
-       Right $ lenDefines `LBS.append` daeBoilerplateCode `LBS.append` preFuncs `LBS.append` mainCode
+     Right (mainCode, preFuncs, _, nBvars, _) ->
+       Right $ lenDefines `LBS.append` daeBoilerplateCode `LBS.append` (LBS.pack $ "#define MAXBVARS " ++ show nBvars ++ "\n")
+         `LBS.append` preFuncs `LBS.append` mainCode
      Left e -> Left e
 
 dofsAffectingInitialResidual vm@(VariableMap { vmapMap = m }) (constv, varying, _, _, _, _) =
@@ -583,25 +593,32 @@ putModelSolveConsts vmap model@(SimplifiedModel { assertions = assertions }) p
 -- | We have two cases: Solve by assignment of the variable on one side to the
 -- | evaluation of the expression on the other, and solve using the DoSolve
 -- | non-linear solver.
-solveSystem ep vmap known [Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ [a, b])), AssertionContext ctx)]
-  | Just (vname, deg, iv) <- tryGetVariableRef (stripSemCom a),
-    Just (_, _, v) <- M.lookup vname ctx,
-    not (S.member (v, deg, iv) known),
-    Just vCode <- getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg) = do
-      cgAppend $ LBS.pack vCode
-      cgAppend " = "
-      putExpression ep vmap ctx (stripSemCom b)
-      cgAppend ";\n"
-      return $ S.insert (v, deg, iv) known
-  | Just (vname, deg, iv) <- tryGetVariableRef (stripSemCom b),
-    Just (_, _, v) <- M.lookup vname ctx,
-    not (S.member (v, deg, iv) known), 
-    Just vCode <- getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg) = do
-      cgAppend $ LBS.pack vCode
-      cgAppend " = "
-      putExpression ep vmap ctx (stripSemCom a)
-      cgAppend ";\n"
-      return $ S.insert (v, deg, iv) known
+solveSystem ep vmap known [assert@(Assertion (WithMaybeSemantics _ (WithCommon _ (Apply op [a, b])), AssertionContext ctx))]
+  | opIs "uncertainty1" "sampleFromDistribution" op =
+    liftM (foldl' (\known' v -> S.insert v known') known .
+           mapMaybe (\(vname, d, iv) -> liftM (\(_, _, v) -> (v, d, iv)) $ M.lookup vname ctx)) $
+        solveDist vmap ctx (stripSemCom a) (stripSemCom b)
+  | otherwise = solveEq
+  where
+    solveEq
+      | Just (vname, deg, iv) <- tryGetVariableRef (stripSemCom a),
+        Just (_, _, v) <- M.lookup vname ctx,
+        not (S.member (v, deg, iv) known),
+        Just vCode <- getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg) = do
+          cgAppend $ LBS.pack vCode
+          cgAppend " = "
+          putExpression ep vmap ctx (stripSemCom b)
+          cgAppend ";\n"
+          return $ S.insert (v, deg, iv) known
+      | Just (vname, deg, iv) <- tryGetVariableRef (stripSemCom b),
+        Just (_, _, v) <- M.lookup vname ctx,
+        not (S.member (v, deg, iv) known), 
+        Just vCode <- getVariableString (if iv then TimeVaryingEvaluation else ep) vmap (v, deg) = do
+          cgAppend $ LBS.pack vCode
+          cgAppend " = "
+          putExpression ep vmap ctx (stripSemCom a)
+          cgAppend ";\n"
+          return $ S.insert (v, deg, iv) known
 solveSystem ep vmap known eqns = do
   fIdx <- cgAllocateIndex
   let fnName = "SolveSystem" `LBS.append` (LBS.pack . show $ fIdx)
@@ -641,6 +658,81 @@ solveSystem ep vmap known eqns = do
   cgAppend "free(params);\n"
   cgAppend "}"
   return (allVars `S.union` known)
+
+solveDist vmap ctx assignTo (Apply op distArgs)
+  | opIs "uncertainty1" "distributionFromPDF" op = univariateDistSample vmap ctx "distributionFromPDF" "SampleFromPDF" assignTo (map stripSemCom distArgs)
+  | opIs "uncertainty1" "distributionFromPMF" op = univariateDistSample vmap ctx "distributionFromPMF" "SampleFromPMF" assignTo (map stripSemCom distArgs)
+  | opIs "uncertainty1" "distributionFromRealisations" op = realisationsDistSample vmap ctx assignTo (map stripSemCom distArgs)
+solveDist _ _ _ expr =
+  fail $ "Found invalid distribution specification " ++ (show expr)
+
+univariateDistSample _ _ opName _ _ [] = fail $ "Model contains a " ++ opName ++ " distribution specification with no arguments"
+univariateDistSample vmap ctx opName fName assignTo distArgs
+  | Nothing <- mAssignList = fail $ "Model contains a " ++ opName ++
+                                    " distribution sample, but invalid random variable specification " ++ (show assignTo)
+  | Just (_:(_:_)) <- mAssignList = fail $ "Model contains a " ++ opName ++
+                                           " distribution sample, but more than one random variable: " ++ (show assignTo)
+  | Just [] <- mAssignList  = fail $ "Model contains a " ++ opName ++
+                                     " distribution sample, but no random variables: " ++ (show assignTo)
+  | null distArgs = fail $ "Model contains a " ++ opName ++ " but no arguments to distribution were specified."
+  | Nothing <- mLambda = fail $ "Model contains a " ++ opName ++ " but instead of a lambda this was found: " ++
+                         show (head distArgs)
+  | Just al@((vname, deg, iv):_) <- mAssignList,
+    Just (_, _, v) <- M.lookup vname ctx,
+    Just vCode <- getVariableString (if iv then TimeVaryingEvaluation else ConstantEvaluation) vmap (v, deg),
+    Just (bvName, expr) <- mLambda = do
+      cgAppend "{\n"
+      cgAppend "struct ArrayBundle b = { CONSTANTS, STATES, RATES, BVARS };"
+      cgAppend $ LBS.pack vCode
+      cgAppend " = "
+      cgAppend fName
+      cgAppend "("
+      vmap' <- cgAllocateBVar bvName vmap
+      fIdx <- cgAllocateIndex
+      let fnName = "Sample" `LBS.append` (LBS.pack . show $ fIdx)
+      cgAppend fnName
+      cgAppend ", &b"
+      cgAppend ");\n"
+      cgAppend "}\n"
+      cgFunction $ do
+        cgAppend "double "
+        cgAppend fnName
+        cgAppend "(void* allState)\n{\nUNBUNDLE_ARRAYS\n  return "
+        putExpression ConstantEvaluation vmap' ctx expr
+        cgAppend ";\n}\n"
+      return al
+  | otherwise = fail $ "Can't find random variable for " ++ opName ++ " sample: " ++ (show assignTo)
+  where
+    mAssignList = tryGetVariableRefList assignTo
+    tryGetLambda1 (Bind op [WithMaybeSemantics _ (WithCommon _ (Ci bvarName))] ex)
+      | opIs "fns1" "lambda" op = Just (bvarName, stripSemCom ex)
+    tryGetLambda1 _ = Nothing
+    mLambda = tryGetLambda1 (head distArgs)
+
+realisationsDistSample vmap ctx assignTo distArgs
+  | Nothing <- mAssignList = fail $ "Model contains a distributionFromRealisations " ++
+                             " distribution sample, but invalid random variable specification " ++ (show assignTo)
+  | Just assignList <- mAssignList,
+    (Apply op exprs'):_ <- distArgs,
+    opIs "linalg2" "vector" op = do
+      let exprs = map stripSemCom exprs'
+      cgAppend "{\n"
+      vals <- mapM (extractVectorRow (length assignList)) exprs
+      cgAppend "  int whichChosen = "
+      cgAppend "}\n"
+      return assignList
+  | otherwise = fail $ "The argument to a distributionFromRealisations "
+  where
+    mAssignList = tryGetVariableRefList assignTo
+
+extractVectorRow 1 (Cn cnp) = return [cpToDouble cnp]
+extractVectorRow len (Apply op v)
+  | length v == len = mapM extractVectorEntry (map stripSemCom v)
+  | not (opIs "lingalg2" "vector" op) = fail $ "Realisation vector row operator should be ci or application of vector constructor, not " ++ (show op)
+  | otherwise = fail $ "Realisation vector row should have had " ++ (show len) ++ "entries, but it had " ++ (show (length v)) ++ " entries instead."
+extractVectorRow _ expr = fail $ "Invalid form for realisation vector row: " ++ (show expr)
+extractVectorEntry (Cn cnp) = return . cpToDouble $ cnp
+extractVectorEntry ex = fail $ "Realisation vector entry should be a cn, not " ++ (show ex)
 
 checkInequality ep vmap (Assertion (ieq, AssertionContext ctx)) = do
   cgAppend "if (!("
@@ -803,9 +895,11 @@ getOutput l = do
 classifyVariablesAndAssertions :: Monad m => DAEIntegrationSetup -> SimplifiedModel -> ErrorT String m ModelClassification
 classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (SimplifiedModel { assertions = assertions }) =
   let
-    (equations, inequalities) = partition (isEquation . stripPiecewiseOrLogic . assertionToAST) assertions
+    (equationsOrDist, inequalities) = partition (isEquationOrDist . stripPiecewiseOrLogic . assertionToAST) assertions
+    (equations, dists) = partition (isEquation . assertionToAST) equationsOrDist
     usageList = map (S.fromList . findAssertionVariableUsage) equations
-    allVars = S.unions usageList
+    distEdges = map distToEdges dists
+    allVars = S.unions usageList `S.union` (S.fromList . concatMap (\(a,b) -> a ++ b)) distEdges
     allVarsNoTime = S.delete (bv, 0, False) allVars
     allVarsNoStates = S.filter (\(v, d, iv) -> iv || d > 0 ||
                                                not ((v, d + 1, False) `S.member` allVarsNoTime)) allVarsNoTime
@@ -814,6 +908,7 @@ classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (
     equationsNoTime = filter (\(_, vu) -> not $ (bv, 0, False) `S.member` vu || any (\(_, deg, iv) -> deg == 0 && not iv) (S.toList vu)) $
                       zip equations usageList
     allVarsNoStatesL = S.toList allVarsNoStates
+    nDists = length dists
     nEqns = length equations
     nVarsNoTime = S.size allVarsNoTime
     nVarsNoStates = S.size allVarsNoStates
@@ -822,12 +917,14 @@ classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (
     eqnStructure = U.array ((0,0), (nEqnsNoTime - 1, nVarsNoStates - 1))
                            (concatMap (\(eqn, (_, s)) -> [((eqn, varID), S.member var s) | (var, varID) <- zip allVarsNoStatesL [0..]])
                                       (zip [0..] equationsNoTime))
-    allEqnNos = S.fromList [0..(nEqnsNoTime - 1)]
+    allEqnNos = S.fromList [0..(nEqnsNoTime + nDists - 1)]
+    varMapR = M.fromList (zip allVarsNoStatesL [0..])
     (constEqns, constVars) = 
       foldl' (\(l1, l2) (a, b) -> (a:l1, b:l2)) ([], []) $
         smallestDecompose eqnStructure allEqnNos (S.fromList [0..(nVarsNoStates - 1)])
+                          (zip [nEqnsNoTime..] (map (\(a, b) -> (map (varMapR!!) a, map (varMapR!!) b)) distEdges))
     varMap = M.fromList (zip [0..] allVarsNoStatesL)
-    eqnMap = M.fromList (zip [0..] (map fst equationsNoTime))
+    eqnMap = M.fromList (zip [0..] (map fst equationsNoTime) ++ zip [nEqnsNoTime..] dists)
     constVarSet = S.fromList . map (varMap!!) . concat $ constVars
     varSet = allVarsNoTime `S.difference` constVarSet
     constEqns' = map (map (eqnMap!!)) constEqns
@@ -836,9 +933,9 @@ classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (
       partition (all (\var@(_, _, isIV) -> isIV || S.member var constVarSet) . findAssertionVariableUsage)
     (ieqConst, ieqVary) = partitionByUsage inequalities
   in
-   if nEqns == nVarsNoStates then
-     return (constVarSet, varSet, reverse constEqns', varEqns, ieqConst, ieqVary)
-   else fail $ "Trying to solve a model with " ++ (show nEqns) ++ " equations but " ++ (show nVarsNoTime) ++ " unknowns."
+   if nEqns == nVarsNoStates
+     then return (constVarSet, varSet, reverse constEqns', varEqns, ieqConst, ieqVary)
+     else fail $ "Trying to solve a model with " ++ (show nEqns) ++ " equations but " ++ (show nVarsNoTime) ++ " unknowns."
 
 assertionToAST (Assertion (astc, _)) = stripSemCom astc
 stripPiecewiseOrLogic (Apply op (arg1:_))
@@ -848,6 +945,9 @@ stripPiecewiseOrLogic (Apply op (arg1:_))
     (opIs "piece1" "piece" opv) || (opIs "piece1" "otherwise" opv) = stripPiecewiseOrLogic (stripSemCom argv1)
 stripPiecewiseOrLogic ex = ex
 
+isEquationOrDist (Apply op _) = opIs "relation1" "eq" op || opIs "uncertainty1" "sampleFromDistribution" op
+isEquationOrDist _ = False
+
 isEquation (Apply op _) = opIs "relation1" "eq" op
 isEquation _ = False
 
@@ -856,6 +956,13 @@ isEquation _ = False
 findAssertionVariableUsage :: Assertion -> [(VariableID, Int, Bool)]
 findAssertionVariableUsage (Assertion (ex, AssertionContext vmap)) =
   findExpressionVariableUsage (M.map (\(_, _, v) -> v) vmap) (stripSemCom ex)
+
+distToEdges :: Assertion -> ([(VariableID, Int, Bool)], [(VariableID, Int, Bool)])
+distToEdges (Assertion (WithMaybeSemantics _ (WithCommon _ (Apply _ (ex1:ex2:_))), AssertionContext vmap)) =
+  let n2v = M.map (\(_, _, v) -> v) vmap
+  in
+   (findExpressionVariableUsage n2v (stripSemCom ex1),
+    findExpressionVariableUsage n2v (stripSemCom ex2))
 
 findExpressionVariableUsage nameToVar x
   | Just (name, deg, isiv) <- tryGetVariableRef x,
@@ -994,6 +1101,12 @@ tryGetVariableRef x
   | Just name <- tryGetInfDelayed x = Just (name, 0, False)
   | Just (name, _) <- tryGetInfDelayedDeriv x = Just (name, 1, False)
 tryGetVariableRef _ = Nothing
+
+tryGetVariableRefList ex
+  | v@(Just _) <- tryGetVariableRef ex = liftM (:[]) v
+tryGetVariableRefList (Apply op args)
+  | opIs "linalg2" "vector" op = sequence $ map (tryGetVariableRef . stripSemCom) args
+tryGetVariableRefList _ = Nothing
 
 tryGetConstant (WithMaybeSemantics _ (WithCommon _ (Cn cp))) =
   Just (cpToDouble cp)
