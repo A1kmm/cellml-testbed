@@ -896,7 +896,7 @@ classifyVariablesAndAssertions :: Monad m => DAEIntegrationSetup -> SimplifiedMo
 classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (SimplifiedModel { assertions = assertions }) =
   let
     (equationsOrDist, inequalities) = partition (isEquationOrDist . stripPiecewiseOrLogic . assertionToAST) assertions
-    (equations, dists) = partition (isEquation . assertionToAST) equationsOrDist
+    (equations, dists) = partition (isEquation . stripPiecewiseOrLogic . assertionToAST) equationsOrDist
     usageList = map (S.fromList . findAssertionVariableUsage) equations
     distEdges = map distToEdges dists
     allVars = S.unions usageList `S.union` (S.fromList . concatMap (\(a,b) -> a ++ b)) distEdges
@@ -935,7 +935,7 @@ classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (
   in
    if nEqns == nVarsNoStates
      then return (constVarSet, varSet, reverse constEqns', varEqns, ieqConst, ieqVary)
-     else fail $ "Trying to solve a model with " ++ (show nEqns) ++ " equations but " ++ (show nVarsNoTime) ++ " unknowns."
+     else fail $ "Trying to solve a model with " ++ (show nEqns) ++ " equations but " ++ (show nVarsNoStates) ++ " unknowns."
 
 assertionToAST (Assertion (astc, _)) = stripSemCom astc
 stripPiecewiseOrLogic (Apply op (arg1:_))
