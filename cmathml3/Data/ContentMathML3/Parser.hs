@@ -9,7 +9,7 @@ import Data.Maybe
 import Control.Monad
 import Control.Monad.Error
 import Control.Monad.Trans.Error
-import Text.Parsec hiding ((<|>))
+import Text.Parsec hiding ((<|>), many)
 import Control.Applicative hiding (liftA, liftA2, liftA3)
 import Text.Parsec.Language
 import Text.Parsec.Token
@@ -48,21 +48,24 @@ parseMathML = melem "math" /> (isElem >>> parseMathMLExpression)
 parseInt :: (Monad m, Integral a) => Int -> String -> String -> m a
 parseInt base n v =
     either (\e -> fail $ n ++ " must be an integer in base " ++ (show base) ++ ": " ++ (show e)) return $
-      parse (intParser (fromIntegral base)) v v
+      parse (withTrim $ intParser (fromIntegral base)) v v
 
 parseReal :: Monad m => Int -> String -> String -> m Double
 parseReal base n v =
     either (\e -> fail $ n ++ " must be a real in base " ++ (show base) ++ ": " ++ (show e)) return $
-      parse (realParser (fromIntegral base)) v v
+      parse (withTrim $ realParser (fromIntegral base)) v v
 
 allDigits = ['0'..'9'] ++ ['A'..'Z'] ++ ['a'..'z']
 digitToNumber d | d >= '0' && d <= '9' = ord d - ord '0'
                 | d >= 'A' && d <= 'Z' = ord d - ord 'A'
                 | d >= 'a' && d <= 'z' = ord d - ord 'a'
 
+withTrim p = (many (oneOf " \t\r\n")) *> p <* (many (oneOf " \t\r\n"))
+
 intParser :: Integral a => a -> Parsec String () a
-intParser base = liftM (0-) (char '-' >> unsignedIntParser base) <|>
-                 unsignedIntParser base
+intParser base = 
+  (liftM (0-) (char '-' >> unsignedIntParser base) <|>
+   unsignedIntParser base)
 unsignedIntParser :: Integral a => a -> Parsec String () a
 unsignedIntParser base = let
   validDigits = take (fromIntegral base) allDigits
@@ -91,7 +94,7 @@ realParser base = do
 afterPointParser digits invb = (do
   c <- liftM (fromIntegral . digitToNumber) $ oneOf digits
   v <- afterPointParser digits invb
-  return $ c + v * invb) <|> (eof >> return 0)
+  return $ c + v * invb) <|> (return 0)
 
 intBitPatternToDouble :: (Integral a, Fractional b) => a -> b
 intBitPatternToDouble bp =

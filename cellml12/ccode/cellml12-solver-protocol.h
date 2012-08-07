@@ -5,11 +5,12 @@
 #include <sundials/sundials_nvector.h>
 #include <nvector/nvector_serial.h>
 #include <math.h>
+#include <cvode/cvode.h>
 #include <kinsol/kinsol.h>
 #include <kinsol/kinsol_spgmr.h>
 
 struct ArrayBundle {
-  double* abConstants, * abStates, * abRates, * abOldStates, * abOldRates;
+  double* abConstants, * abStates, * abRates, * abBvars, * abOldStates, * abOldRates;
 };
 
 struct KSData {
@@ -21,13 +22,23 @@ struct KSData {
   double * CONSTANTS; \
   double * STATES; \
   double * RATES; \
+  double * BVARS; \
   double * OLDSTATES; \
   double * OLDRATES; \
   CONSTANTS = ((struct ArrayBundle*)allState)->abConstants; \
   STATES = ((struct ArrayBundle*)allState)->abStates; \
   RATES = ((struct ArrayBundle*)allState)->abRates; \
+  BVARS = ((struct ArrayBundle*)allState)->abBvars; \
   OLDSTATES = ((struct ArrayBundle*)allState)->abOldStates; \
   OLDRATES = ((struct ArrayBundle*)allState)->abOldRates;
+
+struct PDFData {
+  struct ArrayBundle* pdfBundle;
+  double (*pdf)(void* aBundle);
+  double cdfTarget;
+  int pdfBvar;
+  double cdfUplimit;
+};
 
 int solver_call(N_Vector params, N_Vector resids, void* udata)
 {
@@ -102,6 +113,10 @@ void err_report(int code, const char* mod, const char* func, const char* msg, vo
   print_error("IDA failure in module %s, function %s: %s", mod, func, msg);
 }
 
+void err_ignore(int code, const char* mod, const char* func, const char* msg, void* udata)
+{
+}
+
 double* DoSolve(struct ArrayBundle* b, size_t n, int (*f)(void*,double*,double*))
 {
   N_Vector params, ones;
@@ -143,6 +158,94 @@ double* DoSolve(struct ArrayBundle* b, size_t n, int (*f)(void*,double*,double*)
   return paramArray;
 }
 
+int
+pdfIntegrand(double t, N_Vector varsV, N_Vector ratesV, void* data)
+{
+  struct PDFData* aPDF = (struct PDFData*)data;
+  double tp1 = 1.0 + t;
+
+  aPDF->pdfBundle->abBvars[aPDF->pdfBvar] = aPDF->cdfUplimit + t / tp1;
+
+  NV_DATA_S(ratesV)[0] = aPDF->pdf(aPDF->pdfBundle) * (1.0 / (tp1 * tp1));
+
+  return 0;
+}
+
+int
+computeCDF(N_Vector params, N_Vector resids, void* udata)
+{
+  void* cv;
+  struct PDFData* aPDF = (struct PDFData*)udata;
+  int ret;
+  double tret;
+
+  aPDF->cdfUplimit = NV_DATA_S(params)[0];
+
+  cv = CVodeCreate(CV_BDF, CV_NEWTON);
+  NV_DATA_S(resids)[0] = 0;
+  CVodeSetErrHandlerFn(cv, err_ignore, NULL);
+  CVodeInit(cv, pdfIntegrand, -1.0 + 1E-6, resids);
+  CVodeSetMaxStep(cv, 1E-3);
+  CVodeSetMaxNumSteps(cv, 2000);
+  CVodeSStolerances(cv, 1E-6, 1E-6);
+  CVodeSetUserData(cv, udata);
+  CVSpgmr(cv, PREC_NONE, 0);
+
+  ret = CVode(cv, 0, resids, &tret, CV_NORMAL);
+  CVodeFree(&cv);
+
+  NV_DATA_S(resids)[0] = aPDF->cdfTarget - NV_DATA_S(resids)[0];
+
+  return ret;
+}
+
+double SampleFromPDF(int aIdx,
+                     double (*aFunc)(void*), struct ArrayBundle* aBundle)
+{
+  struct PDFData dPDF;
+  double x, y;
+  N_Vector params, ones;
+  int attempt, flag;
+  void * solver;
+  
+  dPDF.pdfBundle = aBundle;
+  dPDF.pdf = aFunc;
+  dPDF.pdfBvar = aIdx;
+
+  x = (rand() + 0.0) / RAND_MAX;
+
+  dPDF.cdfTarget = x;
+
+  params = N_VMake_Serial(1, &y);
+  ones = N_VNew_Serial(1);
+  N_VConst(1.0, ones);
+  
+  for (attempt = 0; attempt < 26; attempt++)
+  {
+    y = (attempt % 2 ? -1.0 : 1.0) * pow(10.0, attempt / 2.0 - 3.0);
+
+
+    solver = KINCreate();
+    KINInit(solver, computeCDF, params);
+    KINSetErrHandlerFn(solver, err_ignore, NULL);
+    KINSetUserData(solver, &dPDF);
+    KINSpgmr(solver, 0);
+
+
+    KINSetMaxNewtonStep(solver, 1E20);
+    flag = KINSol(solver, params, KIN_LINESEARCH, ones, ones);
+
+    KINFree(&solver);
+
+    if (flag == KIN_SUCCESS && isfinite(y))
+      break;
+  }
+
+  N_VDestroy(params);
+  N_VDestroy(ones);
+  return y;
+}
+
 int compute_residuals(double t, N_Vector yy, N_Vector yp, N_Vector r, void* user_data)
 {
   int ret, i;
@@ -156,6 +259,7 @@ int compute_residuals(double t, N_Vector yy, N_Vector yp, N_Vector r, void* user
     fprintf(stderr, "VARS[%d] = %g, RATES[%d] = %g\n", i, states[i], i, rates[i]);
 #endif
   ret = solveResiduals(t, work + 1, states, rates,
+                       work + 1 + NCONSTS + NVARS * 4,
                        work + 1 + NCONSTS + NVARS * 2,
                        work + 1 + NCONSTS + NVARS * 3,
                        residuals);
@@ -171,7 +275,9 @@ int compute_jacobian(double t, N_Vector yy, N_Vector yp, N_Vector r, N_Vector vv
   double * work = user_data, * states = NV_DATA_S(yy), * rates = NV_DATA_S(yp),
     * residuals = NV_DATA_S(r), * v = NV_DATA_S(vv), * Jv = NV_DATA_S(Jvv);
 
-  solveJacobianxVec(t, alpha, work + 1, states, rates, work + 1 + NCONSTS + NVARS * 2,
+  solveJacobianxVec(t, alpha, work + 1, states, rates,
+                    work + 1 + NCONSTS + NVARS * 4,
+                    work + 1 + NCONSTS + NVARS * 2,
                     work + 1 + NCONSTS + NVARS * 3, v, Jv);
 
   return 0;
@@ -183,7 +289,10 @@ int consistent_solve_step(N_Vector params, N_Vector resids, void* udata)
   int ret;
   double* work = udata;
   paramsToState(NV_DATA_S(params), work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS);
-  return solveResiduals(work[0], work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS,
+  return solveResiduals(work[0], work + 1,
+                        work + 1 + NCONSTS,
+                        work + 1 + NCONSTS + NVARS,
+                        work + 1 + NCONSTS + NVARS * 4,
                         work + 1 + NCONSTS + NVARS * 2,
                         work + 1 + NCONSTS + NVARS * 3,
                         NV_DATA_S(resids));
@@ -252,6 +361,7 @@ int consistent_solve_step(N_Vector params, N_Vector resids, void* udata)
 
   return solveResiduals(srs->work[0], srs->work + 1, srs->work + 1 + NCONSTS,
                         srs->work + 1 + NCONSTS + NVARS,
+                        srs->work + 1 + NCONSTS + NVARS * 4,
                         srs->work + 1 + NCONSTS + NVARS * 2,
                         srs->work + 1 + NCONSTS + NVARS * 3,
                         NV_DATA_S(resids));
@@ -269,6 +379,7 @@ int ensure_consistent_at(double t, double* work)
     return 0;
 
   solveResiduals(work[0], work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS,
+                 work + 1 + NCONSTS + NVARS * 4,
                  work + 1 + NCONSTS + NVARS * 2,
                  work + 1 + NCONSTS + NVARS * 3,
                  resids1);
@@ -280,6 +391,7 @@ int ensure_consistent_at(double t, double* work)
     else
       work[i] *= 1.01;
     solveResiduals(work[0], work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS,
+                   work + 1 + NCONSTS + NVARS * 4,
                    work + 1 + NCONSTS + NVARS * 2,
                    work + 1 + NCONSTS + NVARS * 3,
                    resids2);
@@ -339,7 +451,7 @@ ida_root_func(double t, N_Vector y, N_Vector yp, double* gout, void* user_data)
 {
   double * work = user_data, * states = NV_DATA_S(y), * rates = NV_DATA_S(yp);
   
-  getEventRoots(t, work + 1, states, rates, gout);
+  getEventRoots(t, work + 1, states, rates, work + 1 + NCONSTS + NVARS * 4, gout);
   return 0;
 }
 
@@ -347,6 +459,8 @@ int main(int argc, char** argv)
 {
   double* work = malloc(sizeof(double) * NWORK);
   memset(work, 0, sizeof(double) * NWORK);
+
+  srand(time(0));
 
   while (1)
   {
@@ -370,8 +484,11 @@ int main(int argc, char** argv)
     read_fully(sizeof(double), &relTol);
     read_fully(sizeof(double), &absTol);
 
-    solret = solveForIVs(tStart, work + 1, work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS,
-                         work + 1 + NCONSTS + NVARS * 2, work + 1 + NCONSTS + NVARS * 3);
+    solret = solveForIVs(tStart, work + 1,
+                         work + 1 + NCONSTS, work + 1 + NCONSTS + NVARS,
+                         work + 1 + NCONSTS + NVARS * 4,
+                         work + 1 + NCONSTS + NVARS * 2,
+                         work + 1 + NCONSTS + NVARS * 3);
     for (i = 0; i < nOverrides; i++)
       work[overrides[i].overVar] = overrides[i].overVal;
 

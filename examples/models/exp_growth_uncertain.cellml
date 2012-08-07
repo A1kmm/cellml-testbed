@@ -1,0 +1,95 @@
+<model name="exp" xmlns="http://www.cellml.org/cellml/1.2#" xmlns:m="http://www.w3.org/1998/Math/MathML">
+  <component name="main">
+    <variable name="time" units="dimensionless" type="real" />
+    <variable name="x" units="dimensionless" type="real" />
+    <variable name="a" units="dimensionless" type="real" />
+    <variable name="b" units="dimensionless" type="real" />
+    <variable name="c" units="dimensionless" type="real" />
+    <m:math>
+      <m:apply><m:eq/>
+        <m:apply><m:csymbol cd="cellml1">evaluatedAt</m:csymbol>
+          <m:ci>time</m:ci><m:cn>0</m:cn>
+          <m:ci>x</m:ci>
+        </m:apply>
+        <m:apply><m:plus/>
+          <m:ci>a</m:ci>
+          <m:ci>b</m:ci>
+          <m:ci>c</m:ci>
+        </m:apply>
+      </m:apply>
+
+      <m:apply><m:eq/>
+        <m:apply><m:diff/>
+          <m:bvar><m:ci>time</m:ci></m:bvar>
+          <m:ci>x</m:ci>
+        </m:apply>
+        <m:apply><m:root/><m:ci>x</m:ci></m:apply>
+      </m:apply>
+
+      <m:apply><m:csymbol cd="uncertainty1">sampleFromDistribution</m:csymbol>
+        <m:ci>a</m:ci>
+        <m:apply><m:csymbol cd="uncertainty1">distributionFromPDF</m:csymbol>
+          <m:bind><m:csymbol cd="fns1">lambda</m:csymbol>
+            <m:bvar><m:ci>z</m:ci></m:bvar>
+            <m:apply><m:times/>
+              <m:apply><m:root/>
+                <m:apply><m:times/>
+                  <m:cn>2</m:cn>
+                  <m:pi/>
+                  <m:cn>1</m:cn> <!-- Variance -->
+                </m:apply>
+                <m:cn>-2</m:cn>
+              </m:apply>
+              <m:apply><m:exp/>
+                <m:apply><m:divide/>
+                  <m:apply><m:power/>
+                    <m:apply><m:minus/>
+                      <m:ci>z</m:ci>
+                      <m:cn>10</m:cn> <!-- Mean -->
+                    </m:apply>
+                    <m:cn>2</m:cn>
+                  </m:apply>
+                  <m:apply><m:times/>
+                    <m:cn>-2</m:cn>
+                    <m:cn>1</m:cn> <!-- Variance -->
+                  </m:apply>
+                </m:apply>
+              </m:apply>
+            </m:apply>
+          </m:bind>
+        </m:apply>
+      </m:apply>
+
+      <m:apply><m:csymbol cd="uncertainty1">sampleFromDistribution</m:csymbol>
+        <m:vector>
+          <m:ci>b</m:ci>
+          <m:ci>c</m:ci>
+        </m:vector>
+        <m:apply><m:csymbol cd="uncertainty1">distributionFromRealisations</m:csymbol>
+          <m:vector>
+   <m:vector><m:cn>2.77211584844911</m:cn><m:cn> -1.38605792422455 </m:cn></m:vector>
+   <m:vector><m:cn> 2.10765169832898 </m:cn><m:cn> -1.05382584916449 </m:cn></m:vector>
+   <m:vector><m:cn> 5.26843939952616 </m:cn><m:cn> -2.63421969976308 </m:cn></m:vector>
+   <m:vector><m:cn> -0.15158735209658 </m:cn><m:cn> 0.0757936760482898 </m:cn></m:vector>
+   <m:vector><m:cn> 1.39244002749752 </m:cn><m:cn> -0.69622001374876 </m:cn></m:vector>
+   <m:vector><m:cn> -0.0263286212759515 </m:cn><m:cn> 0.0131643106379757 </m:cn></m:vector>
+   <m:vector><m:cn> 3.47157998474467 </m:cn><m:cn> -1.73578999237234 </m:cn></m:vector>
+   <m:vector><m:cn> 1.50831833303021 </m:cn><m:cn> -0.754159166515106 </m:cn></m:vector>
+   <m:vector><m:cn> 0.708223822851825 </m:cn><m:cn> -0.354111911425913 </m:cn></m:vector>
+   <m:vector><m:cn> 2.55789475132805 </m:cn><m:cn> -1.27894737566402 </m:cn></m:vector>
+   <m:vector><m:cn> 4.90982678203078 </m:cn><m:cn> -2.45491339101539 </m:cn></m:vector>
+   <m:vector><m:cn> 2.99386377046666 </m:cn><m:cn> -1.49693188523333 </m:cn></m:vector>
+   <m:vector><m:cn> 1.36916298657902 </m:cn><m:cn> -0.68458149328951 </m:cn></m:vector>
+   <m:vector><m:cn> 1.77918237913562 </m:cn><m:cn> -0.889591189567809 </m:cn></m:vector>
+   <m:vector><m:cn> 1.69025853466492 </m:cn><m:cn> -0.845129267332462 </m:cn></m:vector>
+   <m:vector><m:cn> 2.67364846146765 </m:cn><m:cn> -1.33682423073382 </m:cn></m:vector>
+   <m:vector><m:cn> 4.38650871273217 </m:cn><m:cn> -2.19325435636609 </m:cn></m:vector>
+   <m:vector><m:cn> 2.67348100513394 </m:cn><m:cn> -1.33674050256697 </m:cn></m:vector>
+   <m:vector><m:cn> 3.22897589336643 </m:cn><m:cn> -1.61448794668321 </m:cn></m:vector>
+   <m:vector><m:cn> -1.85722685174914 </m:cn><m:cn> 0.928613425874571 </m:cn></m:vector>
+          </m:vector>
+        </m:apply>
+      </m:apply>
+    </m:math>
+  </component>
+</model>

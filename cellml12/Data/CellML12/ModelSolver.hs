@@ -35,7 +35,6 @@ import Data.Serialize.IEEE754
 import Data.Generics
 import Prelude hiding ((!!))
 import Data.CellML12.SystemDecomposer
-import qualified Debug.Trace
 
 data DAEIntegrationSetup = DAEIntegrationSetup {
     daeModel :: SimplifiedModel,
@@ -99,11 +98,12 @@ instance Applicative CodeGen where
 cgAllocateIndex :: CodeGen Int
 cgAllocateIndex = CodeGen $ \(s1, s2, idx, mb) -> Right (s1, s2, idx + 1, mb, idx)
 
-cgAllocateBVar :: String -> VariableMap -> CodeGen VariableMap
+cgAllocateBVar :: String -> VariableMap -> CodeGen (Int, VariableMap)
 cgAllocateBVar n vmap = CodeGen $ \(s1, s2, idx, mb) ->
   Right (s1, s2, idx, max mb (vmapNBVars vmap + 1),
-         vmap { vmapBVars = M.insert n (vmapNBVars vmap) (vmapBVars vmap),
-                vmapNBVars = vmapNBVars vmap + 1 })
+         (vmapNBVars vmap,
+          vmap { vmapBVars = M.insert n (vmapNBVars vmap) (vmapBVars vmap),
+                 vmapNBVars = vmapNBVars vmap + 1 }))
 
 cgFunction :: CodeGen a -> CodeGen a
 cgFunction (CodeGen cg) = CodeGen $ \(s1, s2, idx, s3) ->
@@ -189,7 +189,7 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $ do
       liftIO $ daeWithGenCode setup code
       withSystemTempDirectory' "daesolveXXX" $ \fn -> do
         liftIO $ LBS.writeFile (fn </> "solve.c") code
-        ec <- liftIO $ system $ showString "gcc -ggdb -O0 -Wall " . showString (fn </> "solve.c") . showString " -lm -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lblas -llapack " . showString " -o " $ fn </> "solve"
+        ec <- liftIO $ system $ showString "gcc -Wno-unused-variable -Wno-unused-but-set-variable -ggdb -O0 -Wall " . showString (fn </> "solve.c") . showString " -lm -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lsundials_cvode -lblas -llapack " . showString " -o " $ fn </> "solve"
         if ec /= ExitSuccess then fail "Cannot find C compiler" else do
         (Just i, Just o, _, p) <-
           liftIO $ createProcess $
@@ -227,13 +227,15 @@ putExpression ep vmap ctx x
     cgAppend "OLD"
     doPutVar varname 1 False
   | Just (varname, deg, isIV) <- tryGetVariableRef x = doPutVar varname deg isIV
-  where doPutVar varname deg isIV = do
-          (_, _, var) <-
-            maybe (fail $ "Variable " ++ varname ++ " not found but named in ci") return $
-              M.lookup varname ctx
-          str <- maybe (fail $ "Cannot find C name for variable " ++ varname ++ " (isIV = " ++ show isIV ++ ")") return $
-                   getVariableString (if isIV then TimeVaryingEvaluation else ep) vmap (var, deg)
-          cgAppend . LBS.pack $ str
+  where doPutVar varname deg isIV
+          | Just v <- M.lookup varname (vmapBVars vmap) = do
+            cgAppend "BVARS["
+            cgAppend . LBS.pack . show $ v
+            cgAppend "]"
+          | Just (_, _, var) <- M.lookup varname ctx,
+            Just str <- getVariableString (if isIV then TimeVaryingEvaluation else ep) vmap (var, deg) =
+              cgAppend . LBS.pack $ str
+          | otherwise = fail $ "Variable " ++ varname ++ " not found but named in ci"
 
 putExpression ep vmap ctx x@(Apply (WithMaybeSemantics _ (WithCommon _ (Csymbol (Just cd) name))) operands)
   | cd == "logic1" = putLogicExpression
@@ -565,7 +567,9 @@ writeDAECode vmap model problem classification =
   in
    case ret of
      Right (mainCode, preFuncs, _, nBvars, _) ->
-       Right $ lenDefines `LBS.append` daeBoilerplateCode `LBS.append` (LBS.pack $ "#define MAXBVARS " ++ show nBvars ++ "\n")
+       Right $ lenDefines `LBS.append` 
+         (LBS.pack $ "#define MAXBVARS " ++ show nBvars ++ "\n") `LBS.append`
+         daeBoilerplateCode
          `LBS.append` preFuncs `LBS.append` mainCode
      Left e -> Left e
 
@@ -648,7 +652,7 @@ solveSystem ep vmap known eqns = do
       cgAppend "return 0;\n"
     cgAppend "}\n"
   cgAppend "{"
-  cgAppend "struct ArrayBundle b = { CONSTANTS, STATES, RATES };"
+  cgAppend "struct ArrayBundle b = { CONSTANTS, STATES, RATES, BVARS };"
   cgAppend "params = DoSolve(&b, "
   cgAppend . LBS.pack . show $ S.size newVars
   cgAppend ", "
@@ -687,7 +691,9 @@ univariateDistSample vmap ctx opName fName assignTo distArgs
       cgAppend " = "
       cgAppend fName
       cgAppend "("
-      vmap' <- cgAllocateBVar bvName vmap
+      (bvIdx, vmap') <- cgAllocateBVar bvName vmap
+      cgAppend . LBS.pack . show $ bvIdx
+      cgAppend ", "
       fIdx <- cgAllocateIndex
       let fnName = "Sample" `LBS.append` (LBS.pack . show $ fIdx)
       cgAppend fnName
@@ -717,8 +723,23 @@ realisationsDistSample vmap ctx assignTo distArgs
     opIs "linalg2" "vector" op = do
       let exprs = map stripSemCom exprs'
       cgAppend "{\n"
-      vals <- mapM (extractVectorRow (length assignList)) exprs
-      cgAppend "  int whichChosen = "
+      vals <- mapM (extractVectorRow $ length assignList) exprs
+      cgAppend "  double rdata[] = {"
+      cgAppend $ LBS.intercalate ", " $ map (LBS.pack . show) $ concat vals
+      cgAppend "};\n"
+      cgAppend "  int whichChosen = (rand() % "
+      cgAppend . LBS.pack . show . length $ vals
+      cgAppend ") * "
+      cgAppend . LBS.pack . show . length $ assignList
+      cgAppend ";\n"
+      forM_ assignList $ \(vname, deg, iv) -> do
+        (_, _, v) <- maybe (fail $ "Realisation sample refers to variable " ++ vname ++ " which couldn't be found") return $ M.lookup vname ctx
+        s <- maybe (fail "Can't getVariableString") return $
+               getVariableString (if iv then TimeVaryingEvaluation else
+                                    ConstantEvaluation) vmap (v, deg)
+        cgAppend "  "
+        cgAppend . LBS.pack $ s
+        cgAppend " = rdata[whichChosen++];\n"
       cgAppend "}\n"
       return assignList
   | otherwise = fail $ "The argument to a distributionFromRealisations "
@@ -905,10 +926,11 @@ classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (
                                                not ((v, d + 1, False) `S.member` allVarsNoTime)) allVarsNoTime
     -- Note: for the purposes of the usage list, IVs and rates do not depend on
     -- 'time', we are only looking for explicit time dependencies.
-    equationsNoTime = filter (\(_, vu) -> not $ (bv, 0, False) `S.member` vu || any (\(_, deg, iv) -> deg == 0 && not iv) (S.toList vu)) $
+    equationsNoTime = filter (\(_, vu) -> not $ (bv, 0, False) `S.member` vu || any (\(v, deg, iv) -> not iv && ((v, deg + 1, False) `S.member` allVars || (v, deg + 1, True) `S.member` allVars)) (S.toList vu)) $
                       zip equations usageList
     allVarsNoStatesL = S.toList allVarsNoStates
     nDists = length dists
+    nDistDegs = sum $ map (length . fst) distEdges
     nEqns = length equations
     nVarsNoTime = S.size allVarsNoTime
     nVarsNoStates = S.size allVarsNoStates
@@ -932,10 +954,10 @@ classifyVariablesAndAssertions (DAEIntegrationSetup { daeBoundVariable = bv }) (
     partitionByUsage =
       partition (all (\var@(_, _, isIV) -> isIV || S.member var constVarSet) . findAssertionVariableUsage)
     (ieqConst, ieqVary) = partitionByUsage inequalities
-  in
-   if nEqns == nVarsNoStates
+  in do
+   if (nEqns + nDistDegs) == nVarsNoStates
      then return (constVarSet, varSet, reverse constEqns', varEqns, ieqConst, ieqVary)
-     else fail $ "Trying to solve a model with " ++ (show nEqns) ++ " equations but " ++ (show nVarsNoStates) ++ " unknowns."
+     else fail $ "Trying to solve a model with " ++ (show (nEqns + nDistDegs)) ++ " constraints but " ++ (show nVarsNoStates) ++ " unknowns."
 
 assertionToAST (Assertion (astc, _)) = stripSemCom astc
 stripPiecewiseOrLogic (Apply op (arg1:_))
@@ -1416,8 +1438,9 @@ tryConstantApply "transc1" o l = tryTransc1ConstantApply o l
 tryConstantApply "relation1" o l = tryRelation1ConstantApply o l
 tryConstantApply "rounding1" o l = tryRounding1ConstantApply o l
 tryConstantApply "integer1" o l = tryInteger1ConstantApply o l
+tryConstantApply "linalg2" o l = tryLinalg2ConstantApply o l
 tryConstantApply "nums1" "rational" [v1, v2] = return . Cn . CnReal $ v1 / v2
-tryConstantApply cd o _ = fail ("Unrecognised content dictionary: " ++ cd)
+tryConstantApply cd o _ = fail ("Unrecognised content dictionary when attempting partial evaluation: " ++ cd)
 
 tryConstantApplyBool :: Monad m => String -> String -> [Bool] -> ErrorT String m AST
 tryConstantApplyBool "logic1" o l = tryLogic1ConstantApply o l
@@ -1550,6 +1573,11 @@ tryInteger1ConstantApply "factorial" _ = fail "factorial requires exactly one ar
 tryInteger1ConstantApply "quotient" _ = fail "quotient requires exactly two arguments"
 tryInteger1ConstantApply "remainder" _ = fail "remainder requires exactly two arguments"
 tryInteger1ConstantApply n _ = fail $ "Content dictionary integer1 has no operator " ++ n
+
+tryLinalg2ConstantApply "vector" args = return $ Apply (noSemCom $ Csymbol (Just "linalg2") "vector") (map (noSemCom . Cn . CnReal) args)
+tryLinalg2ConstantApply "matrix" args = return $ Apply (noSemCom $ Csymbol (Just "linalg2") "matrix") (map (noSemCom . Cn . CnReal) args)
+tryLinalg2ConstantApply "matrixrow" args = return $ Apply (noSemCom $ Csymbol (Just "linalg2") "matrixrow") (map (noSemCom . Cn . CnReal) args)
+tryLinalg2ConstantApply o _ = fail $ "Content dictionary linalg2 has no operator " ++ o
 
 tryNums1Constant "infinity" = Just . Cn . CnReal $ 1.0/0.0
 tryNums1Constant "e" = Just . Cn . CnReal . exp $ 1
@@ -1981,21 +2009,21 @@ findUnusedName v m | Nothing <- M.lookup v m = v
                      (maybe (error "End of inf list") id) (find (flip M.member m) [v ++ show n | n <- [2..]])
 
 daeBoilerplateCode =
-  "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES);\n\
-  \int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES, double* residuals);\n\
+  "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES, double* BVARS, double* OLDSTATES, double* OLDRATES);\n\
+  \int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* BVARS, double* OLDSTATES, double* OLDRATES, double* residuals);\n\
   \int paramsToState(double* params, double* STATES, double* RATES);\n\
-  \void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES, double* v, double* Jv);\n\
-  \void getEventRoots(double t, double* CONSTANTS, double* STATES, double* RATES, double* roots);\n\
+  \void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* BVARS, double* OLDSTATES, double* OLDRATES, double* v, double* Jv);\n\
+  \void getEventRoots(double t, double* CONSTANTS, double* STATES, double* RATES, double* BVARS, double* roots);\n\
   \#include \"cellml12-solver-protocol.h\"\n"
-daeInitialPrefix = "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES)\n{\n"
+daeInitialPrefix = "int solveForIVs(double t, double* CONSTANTS, double* STATES, double* RATES, double* BVARS, double* OLDSTATES, double* OLDRATES)\n{\n"
 daeInitialSuffix = "}\n"
-daeResidualPrefix = "int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES, double* residuals)\n{\n"
+daeResidualPrefix = "int solveResiduals(double t, double* CONSTANTS, double* STATES, double* RATES, double* BVARS, double* OLDSTATES, double* OLDRATES, double* residuals)\n{\n"
 daeResidualSuffix = "}\n"
 paramToStatePrefix = "int paramsToState(double* params, double* STATES, double* RATES)\n{\n"
 paramToStateSuffix = "  return 0;\n}\n"
 
-daeJacobianPrefix = "void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* OLDSTATES, double* OLDRATES, double* v, double* Jv)\n{\n"
+daeJacobianPrefix = "void solveJacobianxVec(double t, double alpha, double* CONSTANTS, double* STATES, double* RATES, double* BVARS, double* OLDSTATES, double* OLDRATES, double* v, double* Jv)\n{\n"
 daeJacobianSuffix = "}\n"
 
-daeEventRootsPrefix = "void getEventRoots(double t, double* CONSTANTS, double* STATES, double* RATES, double* roots)\n{\ndouble * OLDSTATES = STATES, * OLDRATES = RATES;\n"
+daeEventRootsPrefix = "void getEventRoots(double t, double* CONSTANTS, double* STATES, double* RATES, double* BVARS, double* roots)\n{\ndouble * OLDSTATES = STATES, * OLDRATES = RATES;\n"
 daeEventRootsSuffix = "}\n"

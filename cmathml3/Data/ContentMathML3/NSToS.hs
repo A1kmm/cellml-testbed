@@ -289,11 +289,10 @@ exprPass4a (NSSet bvars quals [expr])
   where
     doaQuals = mapMaybe domainQualifierToMaybeDOA quals
     
--- To do: Specification refers to rule for vector which doesn't exist.
--- To do: Specification refers to rule for matrix which doesn't exist.
--- To do: Specification refers to rule for matrixrow which doesn't exist.
--- exprPass4a (NSVector bvars dom expr) = 
-    
+exprPass4a (NSVector bvars dom expr) = NSApply (noNSSemCom $ simpleCsymbol "linalg2" "vector") bvars [] expr
+exprPass4a (NSMatrixByRow rows) = NSApply (noNSSemCom $ simpleCsymbol "linalg2" "matrix") [] [] $ flip map rows $ \(WithNSCommon c (NSMatrixRow bvars quals exprs)) -> WithMaybeSemantics Nothing $ WithNSCommon c $ NSApply (noNSSemCom $ simpleCsymbol "linalg2" "matrixrow") bvars (map NSQualDomain quals) exprs
+exprPass4a (NSMatrixByFunction bvar dom expr) = NSApply (noNSSemCom $ simpleCsymbol "linalg2" "matrix") bvar (map NSQualDomain dom) [expr]
+
 exprPass4a (NSLambda bvars domain expr)
   | null doas = NSBind (noNSSemCom $ simpleCsymbol "fns1" "lambda") bvars [] [expr]
   | otherwise = foldl' (\inner doa -> NSApply (noNSSemCom $ simpleCsymbol "fns1" "restrict") [] [] [noNSSemCom inner, doa])
