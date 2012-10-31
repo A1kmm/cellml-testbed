@@ -73,6 +73,7 @@ instance Ord XNode where
         EQ -> t1 `compare` t2
         _ -> c1
 
+{-
 instance Ord QName where
   q1 `compare` q2 =
     let
@@ -86,6 +87,7 @@ instance Ord QName where
            EQ -> c3
            _ -> c2
        _ -> c1
+-}
 
 instance Data XNode where
   gfoldl k z (XText a) = z XText `k` a

@@ -169,9 +169,8 @@ solveModelWithParameters p = do
       return $ DAEIntegrationResults { daeResultIndices = M.map (\(a, b) -> maybe (error "No index for result variable") id $ a `mplus` b) vmap, daeResults = r }
     _ -> fail "Incomplete results - solver program may have crashed"
 
--- | Runs a solver monad over a particular model with a particular setup.
-runSolverOnDAESimplifiedModel :: SimplifiedModel -> DAEIntegrationSetup -> SolverT (ErrorT String IO) a -> IO (Either String a)
-runSolverOnDAESimplifiedModel m' setup solver = runErrorT $ do
+generateSolveCode :: SimplifiedModel -> DAEIntegrationSetup -> Either String (VariableMap, LBS.ByteString)
+generateSolveCode m' setup = runIdentity . runErrorT $ do
   mSimp1 <- simplifyModel m'
   case fixHighers mSimp1 setup of
     Left e -> fail e
@@ -186,27 +185,34 @@ runSolverOnDAESimplifiedModel m' setup solver = runErrorT $ do
         fail "Model contains initial values that can't be computed independently of time"
       let vmap = assignIndicesToVariables setup mSimp2 constVars varVars
       code <- ErrorT (return (writeDAECode vmap mSimp2 setup c))
-      liftIO $ daeWithGenCode setup code
-      withSystemTempDirectory' "daesolveXXX" $ \fn -> do
-        liftIO $ LBS.writeFile (fn </> "solve.c") code
-        ec <- liftIO $ system $ showString "gcc -Wno-unused-variable -Wno-unused-but-set-variable -ggdb -O0 -Wall " . showString (fn </> "solve.c") . showString " -lm -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lsundials_cvode -lblas -llapack " . showString " -o " $ fn </> "solve"
-        if ec /= ExitSuccess then fail "Cannot find C compiler" else do
-        (Just i, Just o, _, p) <-
-          liftIO $ createProcess $
-            CreateProcess { cmdspec = RawCommand (fn </> "solve") [], cwd = Nothing,
-                            env = Nothing, std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit,
-                            close_fds = False, create_group = False }
-        ecMvar <- liftIO newEmptyMVar
-        liftIO $ forkOS $ do
-          ec' <- waitForProcess p
-          putMVar ecMvar ec'
-        lStr <- liftIO $ LBS.hGetContents o
-        ret <- evalStateT (runReaderT (unsolver solver) (i, vmap, setup)) lStr
-        liftIO $ BS.hPutStr i (BS.pack "\x01") -- Send exit command.
-        liftIO $ hFlush i
-        ec' <- liftIO $ takeMVar ecMvar
-        when (ec' /= ExitSuccess) $ fail "Problem executing integrator program"
-        return ret
+      return (vmap, code)
+
+-- | Runs a solver monad over a particular model with a particular setup.
+runSolverOnDAESimplifiedModel :: SimplifiedModel -> DAEIntegrationSetup -> SolverT (ErrorT String IO) a -> IO (Either String a)
+runSolverOnDAESimplifiedModel m' setup solver = runErrorT $ do
+  (vmap, code) <- ErrorT . return $ generateSolveCode m' setup
+
+  liftIO $ daeWithGenCode setup code
+  withSystemTempDirectory' "daesolveXXX" $ \fn -> do
+    liftIO $ LBS.writeFile (fn </> "solve.c") code
+    ec <- liftIO $ system $ showString "gcc -Wno-unused-variable -Wno-unused-but-set-variable -ggdb -O0 -Wall " . showString (fn </> "solve.c") . showString " -lm -lsundials_ida -lsundials_kinsol -lsundials_nvecserial -lsundials_cvode -lblas -llapack " . showString " -o " $ fn </> "solve"
+    when (ec /= ExitSuccess) $ fail "Cannot find C compiler"
+    (Just i, Just o, _, p) <-
+      liftIO $ createProcess $
+        CreateProcess { cmdspec = RawCommand (fn </> "solve") [], cwd = Nothing,
+                        env = Nothing, std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit,
+                        close_fds = False, create_group = False }
+    ecMvar <- liftIO newEmptyMVar
+    liftIO $ forkOS $ do
+      ec' <- waitForProcess p
+      putMVar ecMvar ec'
+    lStr <- liftIO $ LBS.hGetContents o
+    ret <- evalStateT (runReaderT (unsolver solver) (i, vmap, setup)) lStr
+    liftIO $ BS.hPutStr i (BS.pack "\x01") -- Send exit command.
+    liftIO $ hFlush i
+    ec' <- liftIO $ takeMVar ecMvar
+    when (ec' /= ExitSuccess) $ fail "Problem executing integrator program"
+    return ret
 
 extractPiecewisePiece (Apply op [arg1, arg2])
   | opIs "piece1" "piece" op = Just (stripSemCom arg1, stripSemCom arg2)
