@@ -143,7 +143,8 @@ instance Monad m => MonadState (SolverT m) where
 solveModelWithParameters :: DAEIntegrationProblem -> SolverT (ErrorT String IO) DAEIntegrationResult
 solveModelWithParameters p = do
   (hOut, vm@(VariableMap { vmapMap = vmap }), setup) <- ask
-  let iBound = maybe (error "Bound variable not in vmap!") id . fst $ vmap !! (daeBoundVariable setup, 0)
+  let iBound = maybe (error ("Bound variable not in vmap - " ++ show (daeBoundVariable setup, 0) ++
+                             " - " ++ show vmap)) id . snd $ vmap !! (daeBoundVariable setup, 0)
   
   -- Send the request for the problem to be solved...
   liftIO . BS.hPutStr hOut $ runPut $ do
