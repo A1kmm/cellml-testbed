@@ -71,7 +71,7 @@ public:
                            // pairs of parameters and new value, where a
                            // parameter is specified as a pair of variable
                            // path and derivative degree.
-                           const std::list<std::pair<std::pair<PathToVariableFromModel*, DegreeOfDifferentiation>,
+                           const std::list<std::pair<std::pair<std::tr1::shared_ptr<PathToVariableFromModel>, DegreeOfDifferentiation>,
                                                      double> >&
                            aParameterOverrides,
                            double aLowBvar,
