@@ -5,3 +5,13 @@ examples/RunSolver
 *.hi
 *.o
 \.\#*
+*_stub.h
+*.a
+*.so
+test
+*.lks*
+bin
+lib
+*.tar.bz2
+*.hp
+*.prof
