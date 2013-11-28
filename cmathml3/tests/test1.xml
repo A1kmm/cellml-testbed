@@ -3,7 +3,7 @@
     <ci>x</ci>
     <apply><times/>
       <ci>y</ci>
-      <apply><pow/>
+      <apply><power/>
         <apply><diff/>
           <bvar><ci>t</ci></bvar>
           <ci>z</ci>
